@@ -1,4 +1,58 @@
 # todo: w tym miejscu powinny być definiowane parametry do generowania testów.
 
 # tu dodajemy zmienne
-seed = 1
+seed = 1   # seed generowania zbiorów syntetycznych
+
+
+# ---------------------------------------------------------------------------
+# benchmark (src/testing.py)
+# ---------------------------------------------------------------------------
+[benchmark]
+# zbiory danych: ścieżki względem data/; folder = wszystkie pliki *.parquet w nim,
+# np. ["generated/binary", "generated/multiclass/multi_small.parquet"]
+datasets = ["generated/binary"]
+out_dir = "results/binary"          # względem data/
+
+# scenariusze: "batch" - cały X_test naraz, "online" - każda próbka osobno
+modes = ["batch", "online"]
+
+seeds = [1, 2, 3]                   # powtórzenia: podział danych i las z danym seedem
+test_size = 0.3
+n_online = 500                      # liczba próbek w scenariuszu online
+n_repeats = 1                       # ile razy mierzyć czas każdej metody (mediana)
+
+# true  - badamy też las losowy ze scikit-learn (rf_sklearn: rf.predict, soft voting,
+#         czyli średnia prawdopodobieństw drzew) i porównujemy z nim (agree_rf, speedup_vs_rf)
+# false - badamy tylko metody, które odpytują pojedyncze drzewa (hard voting)
+sklearn_soft_voting = true
+
+
+[forest]
+n_trees = 501
+max_depth = 5                       # usuń klucz, żeby drzewa nie miały limitu głębokości
+
+
+# ---------------------------------------------------------------------------
+# metody badane w benchmarku: jeden blok [[methods]] na metodę.
+#   type    - "full_voting" | "ib_pruning" | "hyper"
+#   name    - opcjonalna nazwa w wynikach
+#   enabled - false wyłącza metodę bez usuwania bloku
+# ---------------------------------------------------------------------------
+[[methods]]
+type = "full_voting"                # hard voting wszystkich drzew (odniesienie dla agree_full)
+
+[[methods]]
+type = "ib_pruning"
+pi = 0.98                           # tablica data/tablice/T{n_trees}_L{l}_pi98.npz
+# table = "T501_L2_pi98.npz"        # albo konkretny plik zamiast pi
+
+[[methods]]
+type = "ib_pruning"
+pi = 0.95
+enabled = false
+
+[[methods]]
+type = "hyper"                      # IB pruning z a priori z głosów out-of-bag (Soto i in., 2016)
+pi = 0.98                           # tablica liczona w fit() z danych uczących, bez pliku
+# n_prior = 20000                   # ile próbek uczących do głosów OOB (domyślnie 20000)
+# smooth = 5                        # okno wygładzania a priori (0 = bez wygładzania)
