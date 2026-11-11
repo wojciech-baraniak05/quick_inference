@@ -34,8 +34,8 @@ for plik in datasets:
         rf = train_forest(X_train, y_train, cfg.N_TREES, cfg.MAX_DEPTH, seed)
 
         # nowe instancje metod dla każdego lasu (fit dobiera np. tablicę IB do T i l,
-        # a HYPER szacuje a priori z głosów out-of-bag na X_train)
-        m = methods_rf(rf, methods=[], X_train=X_train)
+        # a HYPER i MARGIN kalibrują się na głosach out-of-bag danych uczących)
+        m = methods_rf(rf, methods=[], X_train=X_train, y_train=y_train)
         for method in build_methods(cfg.METHODS, cfg.SKLEARN_SOFT_VOTING):
             try:
                 m.add_method(method)

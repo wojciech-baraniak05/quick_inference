@@ -99,7 +99,7 @@ class Glee(SequentialPruning):
         self.min_votes, self.fpc, self.one_sided = min_votes, fpc, one_sided
         super().__init__(name or f"GLEE_pi{pi_tag(pi)}")
 
-    def fit(self, rf, X_train=None):
+    def fit(self, rf, X_train=None, y_train=None):
         super().fit(rf)
         self.prog = tablica_glee(self.T, self.alfa, self.min_votes, self.fpc, self.one_sided)
         return self

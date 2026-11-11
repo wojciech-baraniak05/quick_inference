@@ -1,3 +1,193 @@
+# Changes: margin-based early stopping (Barbareschi, Emmanuele)
+
+Adds the method from Barbareschi, Emmanuele, *A Margin Based Early-Stopping Approach for
+Random Forest Classifiers* (DSN-W 2025, DOI 10.1109/DSN-W65791.2025.00050), removes the code
+duplication it would otherwise have created, and fixes one bug found in HYPER on the way.
+
+Note on naming: the request said "hyper method", but HYPER (Soto et al., 2016) was already in
+the project and the attached paper describes a different method. That method is what was
+added, under the name `margin`.
+
+This file was `chages.md`; it is renamed to `changes.md` (history kept with `git mv`).
+
+## 1. New method: `margin`
+
+New module [src/methods/margin.py](src/methods/margin.py), registered as `type = "margin"` in
+[src/methods/registry.py](src/methods/registry.py) and added to [config.toml](config.toml)
+with `k = 0.0`.
+
+```
+margin of a sample     M  = (v_c - v_c*) / N            (sec. II-B)
+trees used at runtime  N* = N · (mu + k · sigma)        (sec. III-A)
+```
+
+`v_c` = votes for the true class, `v_c*` = votes for the best other class, `mu` / `sigma` =
+mean and standard deviation of `M` over correctly classified calibration samples.
+
+Offline (`fit`): rank the trees, compute `mu`, `sigma` and `N*`.
+At prediction time: every sample is voted on by the first `N*` trees of the ranking.
+
+| Piece | What it does |
+|---|---|
+| `predykcje_kalibracyjne(rf, X_train, y_train, n_calib)` | calibration set: per-tree out-of-bag predictions on the training data (`-1` where a tree saw the sample) and true class indices |
+| `margines(votes, y)` | margin of every sample |
+| `statystyki_marginesu(votes, y)` | `mu`, `sigma` over correctly classified samples |
+| `liczba_drzew(T, mu, sigma, k)` | `N*`, rounded to the nearest integer and kept within `[1, T]` |
+| `spadek_marginesu(pred, y, l)` | MeanD-M score of every tree: mean drop of the margin when that tree is removed |
+| `trafnosc_drzew(pred, y)` | single-tree accuracy (alternative ranking) |
+| `ranking_drzew(pred, y, l, ranking)` | tree order for `"mean_d_m"`, `"accuracy"` or `"none"` |
+| `MarginEarlyStop(k, ranking, n_calib, name)` | the method; results are named `MARGIN_k0`, `MARGIN_k-0.5` etc. |
+| `MarginEarlyStop.set_k(k)` | changes `k` (and `N*`) after `fit` without recalibrating |
+
+### Implementation choices that go beyond the paper's text
+
+- **Calibration set.** The paper takes `T_off` = half of the test set and evaluates on the
+  other half. Here `T_off` is the training data with out-of-bag votes (each sample is voted on
+  only by trees that did not see it), so the whole test set stays for measurement, as for the
+  other methods. Consequences: the margin is divided by the number of trees that voted for the
+  sample (about 37 % of the forest) instead of `N`, and the forest must use `bootstrap=True`.
+- **MeanD-M is computed in one pass.** The paper describes it as "for each tree, evaluates the
+  average reduction in terms of margin", then ranks. That is what is implemented: one score per
+  tree against the full forest. The original MeanD-M paper (Yang et al., 2012) was not
+  consulted, so an iterative variant (re-scoring after each removal), if that is what it
+  defines, is not implemented.
+- **A tree's score is averaged over the samples it votes on** (its out-of-bag samples).
+- **Other rankings.** The paper lists similarity-based, accuracy-based and margin-based
+  ranking as options. `accuracy` and `none` (forest order) are available next to `mean_d_m`;
+  similarity-based ranking is not specified in the paper and is not implemented.
+- **"Correctly classified"** means the majority vote (`argmax`, as in `full_voting`) equals
+  the true class.
+- **Rounding of `N*`** is not given in the paper: nearest integer, kept within `[1, N]`.
+- **Tuning `k` after deployment.** The paper says `k` can be raised or lowered on-board
+  depending on observed accuracy but gives no algorithm. `set_k` makes the change possible;
+  no tuning policy is implemented.
+- **`n_calib` (default 20000)** limits the calibration samples, like `n_prior` in HYPER.
+- **No `pi`.** The final `agree_full ≥ pi` check in `testing.py` does not cover this method.
+
+### What to expect from it
+
+- It is a static method: the same `N*` trees for every sample. IB pruning, HYPER and GLEE
+  decide per sample.
+- `N*` grows with the mean margin, so the method keeps more trees on easy datasets than on
+  hard ones, as the paper's formula says.
+
+## 2. Interface change: labels reach `fit`
+
+The margin needs true labels, which no method needed before.
+
+- `InferenceMethod.fit(rf, X_train=None, y_train=None)` in [src/methods/base.py](src/methods/base.py);
+  `IBPruning`, `Hyper` and `Glee` take the extra argument and ignore it.
+- `methods_rf(rf, methods, X_train=None, y_train=None)` in
+  [src/benchmarking/forest_methods.py](src/benchmarking/forest_methods.py) passes both to every method.
+- [src/testing.py](src/testing.py) passes `y_train`.
+
+Existing calls without `y_train` keep working; `MarginEarlyStop` raises a clear error if the
+training data or labels are missing.
+
+## 3. Redundancy removed
+
+| Before | After |
+|---|---|
+| `FullVoting` had its own `predict_batch` / `predict_one` loops; the margin method needs the same loops over a subset of trees and would have copied both | new `FixedVoting` base class in `base.py` owns both loops and votes with `self.voters`; `FullVoting` is now only a name (all trees), `MarginEarlyStop` only sets `voters` |
+| the out-of-bag code (bootstrap indices, random subsample, data checks) lived inside `hyper.py`; the margin method needs the same thing per tree and would have copied it | new module [src/methods/oob.py](src/methods/oob.py): `probka_uczaca`, `predykcje_oob` (generator, one tree at a time) and `glosy_oob`; `hyper.py` imports `glosy_oob` |
+| two change logs would have existed (`chages.md` and the requested `changes.md`) | one file, `changes.md` |
+
+`FullVoting` runs the same loop as before (same statements, `self.voters` is the same list as
+`self.trees`), so the reference timings do not change.
+
+Left as is on purpose:
+
+- `MarginEarlyStop` is not a `SequentialPruning` subclass. That loop checks a stop rule after
+  every tree for every sample, which a fixed `N*` does not need.
+- The example class `PierwszeK` in `instrukcja.md` (chapter 10) still implements both predict
+  methods itself, because it illustrates the `InferenceMethod` contract.
+- `src/__pycache__/decision_tree.cpython-315.pyc` is still tracked in git although `*.pyc` is
+  ignored and no `decision_tree` module exists. Not removed; it is unrelated to this change.
+
+## 4. Bug fixed in HYPER (found while testing)
+
+`prior_z_glosow` in [src/methods/hyper.py](src/methods/hyper.py) smooths the prior with
+`scipy.ndimage.uniform_filter`, which can leave values around `-1e-20` where the result should
+be 0. `tablica_hyper` then took the logarithm of a negative number, the whole threshold table
+became `nan`, and HYPER silently stopped only when the remaining trees could no longer change
+the winner. The prior is now clipped at 0 after smoothing (one line).
+
+| forest | HYPER_pi98 before | after |
+|---|---|---|
+| 501 trees, 2 classes | 20.2 trees, agree_full 0.9815 | identical |
+| 501 trees, 3 classes | 352.9 trees, agree_full 1.0000 | 47.6 trees, agree_full 0.9785 |
+| 101 trees, 3 classes | 75.5 trees, agree_full 1.0000 | 31.4 trees, agree_full 0.9930 |
+| 60 trees, 4 classes | 44.9 trees, agree_full 1.0000 | 21.7 trees, agree_full 0.9940 |
+
+(`make_classification` data, depth 5.) No two-class case tested was affected, so the binary
+results reported below for HYPER in earlier sections still hold. Any earlier HYPER result with
+3 or more classes should be re-run.
+
+## 5. Documentation
+
+- [README.md](README.md): intro, config keys, new section "Margin-based early stopping",
+  default method list, "adding a method" (`FixedVoting`, `y_train`), project layout.
+- [instrukcja.md](instrukcja.md): new chapter 2c, method table, flow diagram, config example,
+  notes on tree order, `FixedVoting`, the out-of-bag module and the `fit` signature.
+
+## 6. Verification
+
+Run with temporary scripts (no test files were added to the repository).
+
+- **MeanD-M and accuracy scores = brute force.** For random predictions with missing votes
+  (2, 3 and 5 classes), every tree's score matches removing the tree and recomputing the margin.
+- **Out-of-bag refactor.** `glosy_oob` returns the same votes as the version in the previous
+  commit (2 and 4 classes, with and without subsampling); the calibration predictions sum to
+  the same votes; non-consecutive class labels are mapped to class indices correctly.
+- **`FullVoting`** gives the same predictions as a direct vote count, with `n_used = T`.
+- **`MarginEarlyStop`**, all three rankings, 2 and 4 classes: batch and online give identical
+  predictions; `n_used = N*` for every sample; predictions equal a direct vote of the first
+  `N*` ranked trees; `N*` is monotone in `k`; a very large `k` reproduces `full_voting`.
+- **`testing.py` end to end** with the default method list, `binary_small` and
+  `hard_nonlinear`, seeds 1–2 (datasets and output folder overridden in memory, config file
+  unchanged). Mean over the four runs:
+
+  | method | agree_full | trees_mean | speedup_vs_full batch | speedup_vs_full online |
+  |---|---|---|---|---|
+  | `IB_pi98` | 0.9843 | 29.7 | 2.20 | 16.5 |
+  | `HYPER_pi98` | 0.9780 | 26.8 | 2.14 | 17.0 |
+  | `GLEE_pi98` | 0.9920 | 37.6 | 2.14 | 13.2 |
+  | `MARGIN_k0` | 0.9832 | 332.3 | 1.49 | 1.53 |
+
+  At a similar `agree_full` the margin method queries about 11 times more trees than IB
+  pruning, because it cannot stop early on easy samples.
+- **Effect of `k`** (501 trees, depth 5, seeds 1–2, batch, at most 6000 test samples).
+  Each cell is `N*` / agree_full / accuracy:
+
+  | dataset (classes) | full_voting accuracy | k = -1.5 | k = -1 | k = -0.5 | k = 0 | k = 0.5 |
+  |---|---|---|---|---|---|---|
+  | `binary_small` (2) | 0.8633 | 155 / 0.983 / 0.860 | 221 / 0.983 / 0.860 | 286 / 0.992 / 0.862 | 352 / 0.995 / 0.862 | 418 / 0.997 / 0.863 |
+  | `hard_nonlinear` (2) | 0.6871 | 112 / 0.942 / 0.703 | 179 / 0.952 / 0.698 | 246 / 0.965 / 0.692 | 313 / 0.971 / 0.689 | 380 / 0.978 / 0.686 |
+  | `noisy_labels` (2) | 0.8028 | 138 / 0.979 / 0.802 | 206 / 0.984 / 0.802 | 274 / 0.987 / 0.802 | 342 / 0.992 / 0.802 | 409 / 0.994 / 0.802 |
+  | `multi_small` (4) | 0.7233 | 58 / 0.937 / 0.737 | 121 / 0.948 / 0.733 | 184 / 0.962 / 0.728 | 247 / 0.977 / 0.725 | 310 / 0.983 / 0.730 |
+
+  More trees and higher agreement with growing `k`, as in the paper's Fig. 4 and 5. Accuracy
+  stays within about 1.6 percentage points of the full forest and is sometimes above it.
+- **Effect of the ranking** at `k = -1` (same runs), agree_full / accuracy:
+
+  | dataset | `mean_d_m` | `accuracy` | `none` |
+  |---|---|---|---|
+  | `binary_small` | 0.983 / 0.860 | 0.983 / 0.860 | 0.992 / 0.858 |
+  | `hard_nonlinear` | 0.952 / 0.698 | 0.954 / 0.698 | 0.977 / 0.692 |
+  | `noisy_labels` | 0.984 / 0.802 | 0.984 / 0.802 | 0.989 / 0.802 |
+  | `multi_small` | 0.948 / 0.733 | 0.953 / 0.718 | 0.965 / 0.708 |
+
+  Ranking makes the sub-forest agree less with the full vote than the same number of unranked
+  trees, and on two of the four datasets it is more accurate. These are two seeds per dataset,
+  so differences of a few thousandths are within noise.
+- `MarginEarlyStop.fit` takes 0.2–0.8 s for 501 trees.
+
+Not run: the full default benchmark through `testing.py` (all 11 binary datasets, 3 seeds),
+and the paper's own datasets (Avila, AI4I, Dry Bean), which are not in the project. The
+paper's figure of about 53 of 100 trees for a 2 % accuracy loss was therefore not reproduced.
+
+---
+
 # Changes: GLEE method (COMET paper)
 
 Adds the lazy ensemble evaluation rule from Basilico, Munson, Kolda, Dixon, Kegelmeyer,
