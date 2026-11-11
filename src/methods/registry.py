@@ -6,10 +6,12 @@ opcjonalnym enabled (domyślnie true) i parametrami konstruktora danej klasy, np
     {"type": "ib_pruning", "pi": 0.98}
     {"type": "hyper", "pi": 0.99}
     {"type": "glee", "pi": 0.99}
+    {"type": "margin", "k": 0.0}
 """
 from .glee import Glee
 from .hyper import Hyper
 from .ib_pruning import IBPruning
+from .margin import MarginEarlyStop
 from .voting import FullVoting, SklearnRF
 
 # typy metod dostępne w config.toml; rf_sklearn włącza się osobno
@@ -19,6 +21,7 @@ METHOD_TYPES = {
     "ib_pruning": IBPruning,
     "hyper": Hyper,
     "glee": Glee,
+    "margin": MarginEarlyStop,
 }
 
 

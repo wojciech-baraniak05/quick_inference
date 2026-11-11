@@ -17,13 +17,13 @@ class methods_rf:
         times[mode]   (n_metod,)           czas predykcji w s (mediana z n_repeats)
     Wiersz i odpowiada metodzie names[i].
 
-    X_train (dane uczące lasu) jest przekazywane do fit() każdej metody;
-    potrzebują go metody szacujące coś z danych (np. Hyper).
+    X_train, y_train (dane uczące lasu) są przekazywane do fit() każdej metody;
+    potrzebują ich metody szacujące coś z danych (Hyper: X_train, MarginEarlyStop: oba).
     """
 
-    def __init__(self, rf, methods=None, X_train=None):
+    def __init__(self, rf, methods=None, X_train=None, y_train=None):
         self.rf = rf
-        self.X_train = X_train
+        self.X_train, self.y_train = X_train, y_train
         self.classes = rf.classes_
         self.T = len(rf.estimators_)
         self.l = len(rf.classes_)
@@ -39,7 +39,7 @@ class methods_rf:
     def add_method(self, method):
         if method.name in self.names:
             raise ValueError(f"metoda o nazwie '{method.name}' już istnieje")
-        self.methods.append(method.fit(self.rf, self.X_train))
+        self.methods.append(method.fit(self.rf, self.X_train, self.y_train))
         return self
 
     def index(self, name):

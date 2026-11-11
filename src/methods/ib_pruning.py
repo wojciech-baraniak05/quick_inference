@@ -50,7 +50,7 @@ class IBPruning(SequentialPruning):
             name = f"IB_pi{pi_tag(pi)}" if pi is not None else "ib_pruning"
         super().__init__(name)
 
-    def fit(self, rf, X_train=None):
+    def fit(self, rf, X_train=None, y_train=None):
         super().fit(rf)
         if self._prog is not None:
             self.prog = self._prog
