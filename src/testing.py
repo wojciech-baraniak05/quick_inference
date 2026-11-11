@@ -68,7 +68,7 @@ for plik in datasets:
 suite.summary()
 
 # %%
-# przebiegi, w których zgodność metody z wczesnym stopem (IB, HYPER) z pełnym
+# przebiegi, w których zgodność metody z wczesnym stopem (IB, HYPER, GLEE) z pełnym
 # głosowaniem spadła poniżej jej pi
 poziomy = {meth.name: meth.pi for b in suite.runs for meth in b.models.methods
            if getattr(meth, "pi", None) is not None}

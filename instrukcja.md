@@ -32,6 +32,7 @@ Każdą metodę porównujemy z dwiema metodami odniesienia:
 | `full_voting` | **hard voting**: każde drzewo oddaje jeden głos, wygrywa większość | to jest dokładnie to, co IB pruning przybliża; punkt odniesienia dla zgodności |
 | `IB_pi98` itd. | IB pruning z poziomem `pi` | badana metoda |
 | `HYPER_pi98` itd. | IB pruning z a priori rozkładu głosów szacowanym z danych (rozdz. 2a) | badana metoda |
+| `GLEE_pi98` itd. | wczesny stop z gaussowskim przedziałem ufności, z artykułu COMET (rozdz. 2b) | badana metoda |
 
 > **Ważne:** IB pruning przybliża *hard voting*, a nie `rf.predict`. Soft i hard voting
 > zwykle dają ten sam wynik, ale nie zawsze (`agree_rf` między nimi to ok. 0,99). Dlatego to
@@ -144,6 +145,56 @@ domyślnie 20000) i `smooth` (okno wygładzania, 0 = bez).
 
 ---
 
+## 2b. GLEE: gaussowski przedział ufności
+
+Reguła stopu z artykułu Basilico, Munson, Kolda, Dixon, Kegelmeyer, *COMET: A Recipe for
+Learning and Using Large Ensembles on Massive Data* (ICDM 2011, rozdz. II-C), kod w
+[src/methods/glee.py](src/methods/glee.py). GLEE to skrót od *Gaussian Lazy Ensemble Evaluation*.
+
+Głos drzewa to zmienna Bernoulliego, więc po `n` głosach odsetek głosów klasy prowadzącej `p̂`
+ma w przybliżeniu rozkład normalny. Zamiast liczyć prawdopodobieństwo a posteriori (IB, HYPER),
+GLEE buduje jednostronny przedział ufności `1 − α` dla prawdziwego odsetka `p` i przerywa
+głosowanie, gdy jego dolna granica leży powyżej 0,5:
+
+```
+p̂ − ρ·δ > 0,5
+δ = z_α · sqrt(p̂ (1 − p̂) / n)
+ρ = sqrt((m − n) / (m − 1))   jeśli n > 0,05·m,   inaczej 1
+```
+
+- `m` to liczba drzew, `α = 1 − pi` to dopuszczalna częstość niezgodności z pełnym głosowaniem,
+- `ρ` to **poprawka na populację skończoną**: drzewa losujemy bez zwracania, więc niepewność
+  maleje, gdy zostaje ich mało (przy `n = m` przedział ma szerokość 0),
+- przybliżenie normalne jest słabe dla małych `n`, więc stop jest dozwolony dopiero po
+  `min_votes` głosach; artykuł podaje 15, 30 i 45 dla `α` = 10⁻², 10⁻³ i 10⁻⁴ i takie są
+  wartości domyślne (dla `pi = 0.98` jest to 15),
+- dla wielu klas klasa prowadząca jest traktowana jak klasa 1, a druga w kolejności jak
+  klasa 0: `p̂ = t_1 / (t_1 + t_2)`, `n = t_1 + t_2`.
+
+Tak jak w IB, regułę zamieniamy na **tablicę progów** (`tablica_glee`), tutaj jednowymiarową:
+`prog[t_2]` = najmniejsze `t_1`, przy którym wolno przerwać. Dla `T = 501`, `pi = 0.98`:
+`prog[:6] = [15, 14, 13, 12, 12, 13]`. Początkowe wartości wynikają z `min_votes = 15`
+(15 głosów jednogłośnych albo 14 do 1 itd.), dalej decyduje już przedział ufności.
+
+Różnice względem IB i HYPER w praktyce:
+
+- tablica zależy tylko od `T` i parametrów, liczy się w `fit()` w kilka milisekund,
+  **nie potrzeba pliku ani danych uczących**,
+- działa dla **dowolnej liczby klas** (tablica nie rośnie z `l`), więc można ją badać także
+  na zbiorach, na których IB i HYPER są pomijane,
+- przez `min_votes` nigdy nie przerywa przed 15. drzewem, więc na łatwych zbiorach odpytuje
+  więcej drzew niż IB (które potrafi przerwać po 5 jednogłośnych głosach), a `agree_full`
+  wypada wyraźnie powyżej `pi`,
+- `fpc = false` i `one_sided = false` dają warianty G1, G2 i G2-FPC z rys. 1 artykułu;
+  domyślne ustawienia to G1-FPC, czyli reguła, którą artykuł nazywa GLEE.
+
+Z COMET wzięta jest tylko ta reguła. Część o uczeniu (MapReduce, lasy IVoting) dotyczy budowy
+zespołu, a projekt bada inferencję na gotowym lesie ze scikit-learn.
+
+Parametry w configu: `pi`, `min_votes`, `fpc`, `one_sided`.
+
+---
+
 ## 3. Szybki start
 
 ```bat
@@ -228,6 +279,10 @@ pi = 0.98                             # → tablica T{n_trees}_L{l}_pi98.npz
 
 [[methods]]
 type = "hyper"                        # a priori z głosów out-of-bag, bez pliku z tablicą
+pi = 0.98
+
+[[methods]]
+type = "glee"                         # gaussowski przedział ufności (COMET), bez pliku i bez danych
 pi = 0.98
 ```
 
@@ -504,7 +559,7 @@ po wygenerowaniu tablicy.
 drzewach z malejącym zbiorem `aktywne`. Każde drzewo dostaje jednym wywołaniem wszystkie
 jeszcze niezdecydowane próbki, co ogranicza narzut wywołań sklearn. Pętla kończy się,
 gdy wszystkie próbki są zdecydowane. Pętle `predict_batch` i `predict_one` są wspólne dla
-IB i HYPER (klasa `SequentialPruning` w [base.py](src/methods/base.py)); metody różnią się
+IB, HYPER i GLEE (klasa `SequentialPruning` w [base.py](src/methods/base.py)); metody różnią się
 tylko regułą stopu. `czy_stop_wektorowo` sortuje głosy w każdym wierszu
 i czyta progi wektorowo przez `prog[tuple(t[:, 1:].T)]`.
 

@@ -1,3 +1,89 @@
+# Changes: GLEE method (COMET paper)
+
+Adds the lazy ensemble evaluation rule from Basilico, Munson, Kolda, Dixon, Kegelmeyer,
+*COMET: A Recipe for Learning and Using Large Ensembles on Massive Data* (ICDM 2011,
+arXiv:1103.2068), sec. II-C. The paper calls it GLEE (Gaussian Lazy Ensemble Evaluation).
+
+## What was added
+
+New module [src/methods/glee.py](src/methods/glee.py), registered as `type = "glee"` in
+[src/methods/registry.py](src/methods/registry.py) and added to [config.toml](config.toml)
+with `pi = 0.98` next to `IB_pi98` and `HYPER_pi98`.
+
+```
+stop when  p̂ - ρ·δ > 0.5
+δ = z_α · sqrt(p̂(1 - p̂) / n)
+ρ = sqrt((m - n) / (m - 1))  if n > 0.05·m,  else 1
+```
+
+| Piece | What it does |
+|---|---|
+| `min_glosow(alfa)` | the paper's minimum number of votes before a stop: 15 / 30 / 45 for `α` = 1e-2 / 1e-3 / 1e-4 |
+| `tablica_glee(T, alfa, min_votes, fpc, one_sided)` | threshold table `prog[t_2]` = fewest leader votes `t_1` at which the rule stops |
+| `czy_stop_glee(votes, prog)` | vectorised stop check (two largest vote counts, one lookup) |
+| `Glee(pi, min_votes, fpc, one_sided, name)` | the method, a `SequentialPruning` subclass; results are named `GLEE_pi98` etc. |
+
+No interface changes: `Glee` only supplies the stopping rule to the existing loops.
+
+## Implementation choices that go beyond the paper's text
+
+- **Only the inference rule is implemented.** COMET's training side (MapReduce, IVoting
+  forests) builds the ensemble; this project benchmarks inference on a fitted scikit-learn forest.
+- **`pi` instead of `α`.** The constructor takes `pi = 1 - α` so that configs, method names and
+  the `agree_full < pi` check in `testing.py` work the same as for IB pruning and HYPER.
+- **Multiclass.** The paper only says the leader is treated as class 1 and the runner-up as
+  class 0. Here `p̂ = t_1 / (t_1 + t_2)` and `n = t_1 + t_2`, with `m` still the full forest
+  size. Votes for other classes are ignored, which makes the correction `ρ` slightly
+  conservative (it treats them as trees not yet queried). For two classes this is exactly
+  the paper's rule.
+- **`min_votes`** counts `n = t_1 + t_2`. For `α` between the paper's three values the
+  stricter (larger) minimum is used.
+- **Table instead of evaluating the formula per vote**, as the paper also does. For a fixed
+  `t_2` the lower bound grows with `t_1`, so one threshold per `t_2` is exact.
+- **Tree order.** The paper draws trees at random without replacement. As for IB pruning and
+  HYPER, trees are queried in the forest's own order, which is exchangeable for a random forest.
+- **No "result already certain" shortcut.** The rule is the paper's formula only; it does not
+  additionally stop when the remaining trees can no longer change the winner.
+- `fpc = false` and `one_sided = false` expose the paper's G1, G2 and G2-FPC variants;
+  the defaults are G1-FPC.
+
+## Verification
+
+Run with a temporary script (no test files were added to the repository):
+
+- **Table = formula.** For `T` in {51, 100, 501}, `α` in {0.05, 0.02, 0.01, 0.001} and all
+  four `fpc` / `one_sided` combinations, the table gives the same decision as a scalar
+  evaluation of the formula in every vote state, and the rule is monotone in `t_1`.
+- **Paper's simulation (sec. III)**: vote share `p ~ U[0, 1]`, Bernoulli votes.
+
+  | m | α | rule | fraction of ensemble | relative error | disagreement with full vote |
+  |---|---|---|---|---|---|
+  | 501 | 0.02 | GLEE (G1-FPC) | 0.103 | 0.0074 | 0.0125 |
+  | 501 | 0.02 | G1 | 0.128 | 0.0064 | 0.0095 |
+  | 501 | 0.02 | G2-FPC | 0.120 | 0.0044 | 0.0076 |
+  | 501 | 0.02 | IB pruning (`T501_L2_pi98`) | 0.092 | 0.0115 | 0.0167 |
+  | 1000 | 0.01 | GLEE (G1-FPC) | 0.081 | 0.0051 | 0.0077 |
+  | 1000 | 0.001 | GLEE (G1-FPC) | 0.130 | 0.0005 | 0.0008 |
+
+  Relative error and disagreement stay below `α`, as in the paper's Fig. 1c.
+- **Batch and online** give identical predictions and tree counts (2, 4 and 20 classes).
+- **Forests** (501 trees, depth 5, seeds 1–2, batch, `pi = 0.98`):
+
+  | dataset | classes | `GLEE_pi98` agree_full / trees | `IB_pi98` | `HYPER_pi98` |
+  |---|---|---|---|---|
+  | `binary_small` | 2 | 0.993–1.000 / 34–35 | 0.983–0.993 / 24–30 | 0.980–0.983 / 23–25 |
+  | `hard_nonlinear` | 2 | 0.986–0.989 / 39–43 | 0.978–0.982 / 30–36 | 0.967–0.981 / 26–34 |
+  | `multi_small` | 4 | 0.990–0.997 / 63–67 | no table | too many states |
+  | `multi_many_classes` | 20 | 0.989–0.990 / 210 | no table | too many states |
+
+  GLEE never dropped below `pi` here but queries more trees than IB pruning and HYPER at
+  the same `pi`: it cannot stop before 15 votes, while IB stops after 5 unanimous ones.
+- `Glee.fit` takes about 3 ms for 501 trees.
+
+Not run: the full default benchmark through `testing.py` (all 11 binary datasets, 3 seeds).
+
+---
+
 # Changes: HYPER method
 
 Adds the dynamic ensemble pruning method from Soto, Suárez, Martínez-Muñoz,
