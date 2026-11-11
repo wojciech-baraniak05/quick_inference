@@ -5,7 +5,9 @@ opcjonalnym enabled (domyślnie true) i parametrami konstruktora danej klasy, np
 
     {"type": "ib_pruning", "pi": 0.98}
     {"type": "hyper", "pi": 0.99}
+    {"type": "glee", "pi": 0.99}
 """
+from .glee import Glee
 from .hyper import Hyper
 from .ib_pruning import IBPruning
 from .voting import FullVoting, SklearnRF
@@ -16,6 +18,7 @@ METHOD_TYPES = {
     FullVoting.name: FullVoting,
     "ib_pruning": IBPruning,
     "hyper": Hyper,
+    "glee": Glee,
 }
 
 
