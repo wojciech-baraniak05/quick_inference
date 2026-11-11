@@ -13,6 +13,18 @@ from pathlib import Path
 
 import numpy as np
 
+TABLE_DIR = Path(__file__).resolve().parents[1] / "data" / "tablice"
+
+
+def pi_tag(pi):
+    """Poziom ufności w procentach jako tekst do nazw (0.98 -> '98', 0.995 -> '99.5')."""
+    return f"{round(pi * 100, 6):g}"
+
+
+def plik_tablicy(T, l, pi):
+    """Ścieżka pliku z tablicą progów dla T klasyfikatorów, l klas i poziomu pi."""
+    return TABLE_DIR / f"T{T}_L{l}_pi{pi_tag(pi)}.npz"
+
 
 @lru_cache(maxsize=None)
 def wygrana(t, T):
@@ -73,9 +85,8 @@ def generuj_tablice(T, l, pi):
     wygrana.cache_clear()                     # zwolnienie pamięci po obliczeniach
     czas = time.perf_counter() - start        # czas generowania w sekundach
 
-    out_dir = Path(__file__).resolve().parents[1] / "data" / "tablice"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    plik = out_dir / f"T{T}_L{l}_pi{round(pi * 100, 6):g}.npz"
+    TABLE_DIR.mkdir(parents=True, exist_ok=True)
+    plik = plik_tablicy(T, l, pi)
     np.savez_compressed(plik, prog=prog, T=T, l=l, pi=pi, time=czas)
     print(f"Saved tablice/{plik.name}: shape {prog.shape}, time {czas:.2f} s")
     return plik
@@ -90,5 +101,3 @@ def czy_stop(glosy, prog):
 
 if __name__ == "__main__":
     generuj_tablice(T=51, l=2, pi=0.95)
-
-    

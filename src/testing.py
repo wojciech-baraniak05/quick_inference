@@ -1,40 +1,25 @@
 # %%
+"""Benchmark metod inferencji; wszystkie ustawienia są w config.toml."""
 import time
-from pathlib import Path
 
-import numpy as np
-import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
-from methods import IBPruning, benchmark, benchmark_suite, methods_rf
+import config as cfg
+from benchmarking import (DATA_DIR, benchmark, benchmark_suite, check_modes, methods_rf,
+                          train_forest, wczytaj, znajdz_zbiory)
+from methods import build_methods
 
 # %%
-path = Path.cwd().parent / "data"
-DATA_DIR = path / "generated" / "binary"
-TABLE = path / "tablice" / "T501_L2_pi98.npz"
-OUT_DIR = path / "results" / "binary"
+MODES = check_modes(cfg.MODES)
+REFS = (benchmark.REF_RF, benchmark.REF_FULL)
+OUT_DIR = DATA_DIR / cfg.OUT_DIR
+nazwy = [m.name for m in build_methods(cfg.METHODS, cfg.SKLEARN_SOFT_VOTING)]  # walidacja configu
+datasets = znajdz_zbiory(cfg.DATASETS)
 
-N_SEEDS = 3          # powtórzenie r używa seed = r (1, 2, 3)
-N_TREES = 501
-MAX_DEPTH = 5
-N_ONLINE = 500       # liczba próbek w scenariuszu online
-N_REPEATS = 1        # ile razy mierzyć czas każdej metody (mediana)
-
-tablica = np.load(TABLE)
-prog, pi = tablica["prog"], float(tablica["pi"])
-datasets = sorted(DATA_DIR.glob("*.parquet"))
-print(f"{len(datasets)} zbiorów, seedy 1..{N_SEEDS}, tablica {TABLE.name}")
-
-
-def wczytaj(plik):
-    """Zwraca (X, y); kolumny kategoryczne/tekstowe zamieniane na kody całkowite."""
-    df = pd.read_parquet(plik)
-    cechy = df.drop(columns="target")
-    for c in cechy.select_dtypes(exclude="number").columns:
-        cechy[c] = cechy[c].astype("category").cat.codes
-    return cechy.to_numpy(dtype=float), df["target"].to_numpy()
-
+print(f"{len(datasets)} zbiorów, seedy {cfg.SEEDS}, scenariusze {list(MODES)}")
+print(f"las: {cfg.N_TREES} drzew, max_depth={cfg.MAX_DEPTH}, "
+      f"soft voting sklearn: {'tak' if cfg.SKLEARN_SOFT_VOTING else 'nie'}")
+print(f"metody: {nazwy}")
 
 # %%
 suite = benchmark_suite(keys=("dataset", "seed"))
@@ -42,42 +27,62 @@ suite = benchmark_suite(keys=("dataset", "seed"))
 for plik in datasets:
     X, y = wczytaj(plik)
 
-    for seed in range(1, N_SEEDS + 1):
+    for seed in cfg.SEEDS:
         start = time.perf_counter()
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.3, random_state=seed)
+            X, y, test_size=cfg.TEST_SIZE, random_state=seed)
+        rf = train_forest(X_train, y_train, cfg.N_TREES, cfg.MAX_DEPTH, seed)
 
-        # trening równolegle, predykcja w jednym wątku (uczciwe porównanie czasów)
-        rf = RandomForestClassifier(n_estimators=N_TREES, max_depth=MAX_DEPTH,
-                                    random_state=seed, n_jobs=-1)
-        rf.fit(X_train, y_train)
-        rf.set_params(n_jobs=None)
-
-        m = methods_rf(rf)                                   # rf_sklearn + full_voting
-        m.add_method(IBPruning(prog, name="IB_pi98", pi=pi))
+        # nowe instancje metod dla każdego lasu (fit dobiera np. tablicę IB do T i l,
+        # a HYPER szacuje a priori z głosów out-of-bag na X_train)
+        m = methods_rf(rf, methods=[], X_train=X_train)
+        for method in build_methods(cfg.METHODS, cfg.SKLEARN_SOFT_VOTING):
+            try:
+                m.add_method(method)
+            except (ValueError, FileNotFoundError) as e:
+                print(f"  {plik.stem}: pomijam {method.name}: {e}")
+        if not m.methods:
+            print(f"  {plik.stem}: żadna metoda nie pasuje do lasu, pomijam zbiór")
+            break
 
         b = benchmark(m, X_test, y_test,
-                      metadata={"dataset": plik.stem, "seed": seed, "pi": pi},
-                      n_online=N_ONLINE, n_repeats=N_REPEATS)
-        b.run()
+                      metadata={"dataset": plik.stem, "seed": seed,
+                                "n_trees": cfg.N_TREES, "max_depth": cfg.MAX_DEPTH,
+                                "sklearn_soft_voting": cfg.SKLEARN_SOFT_VOTING},
+                      n_online=cfg.N_ONLINE, n_repeats=cfg.N_REPEATS)
+        b.run(modes=MODES)
         suite.add(b)
 
-        r = b.results("batch").loc["IB_pi98"]
-        print(f"{plik.stem:24s} seed={seed}  agree_full={r.agree_full:.4f}  "
-              f"trees={r.trees_mean:6.1f}  speedup_vs_full=x{r.speedup_vs_full:.1f}  "
+        r = b.results(MODES[0])
+        opis = []
+        for name in r.index.difference(REFS, sort=False):
+            w = r.loc[name]
+            s = f"{name}: trees={w.trees_mean:.1f}"
+            if "agree_full" in w:
+                s += f" agree_full={w.agree_full:.4f} x{w.speedup_vs_full:.1f}"
+            opis.append(s)
+        print(f"{plik.stem:24s} seed={seed}  {'  '.join(opis)}  "
               f"({time.perf_counter() - start:.0f} s)")
 
 # %%
 suite.summary()
 
 # %%
-# przebiegi, w których zgodność IB z pełnym głosowaniem spadła poniżej pi
-for mode in ("batch", "online"):
-    agree = suite.results(mode).xs("IB_pi98", level="method")["agree_full"]
-    ponizej = agree[agree < pi]
-    print(f"[{mode}] agree_full < {pi}: {len(ponizej)} z {len(agree)} przebiegów")
-    if len(ponizej):
-        print(ponizej.to_string())
+# przebiegi, w których zgodność metody z wczesnym stopem (IB, HYPER) z pełnym
+# głosowaniem spadła poniżej jej pi
+poziomy = {meth.name: meth.pi for b in suite.runs for meth in b.models.methods
+           if getattr(meth, "pi", None) is not None}
+for mode in suite.modes:
+    df = suite.results(mode)
+    if "agree_full" not in df:
+        print("brak full_voting w benchmarku - pomijam sprawdzenie agree_full")
+        break
+    for name, pi in poziomy.items():
+        agree = df.xs(name, level="method")["agree_full"]
+        ponizej = agree[agree < pi]
+        print(f"[{mode}] {name}: agree_full < {pi}: {len(ponizej)} z {len(agree)} przebiegów")
+        if len(ponizej):
+            print(ponizej.to_string())
 
 # %%
 suite.save(OUT_DIR)
