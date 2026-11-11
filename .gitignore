@@ -1,2 +1,10 @@
-data/
-.env
+data/generated/*
+data/real_data/*
+data/results/*
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+
+.venv/
