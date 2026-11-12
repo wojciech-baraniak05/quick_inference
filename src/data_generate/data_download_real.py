@@ -1,6 +1,8 @@
+"""Pobiera rzeczywiste zbiory danych z repozytorium UCI do data/real_data/."""
 import io
 import urllib.request
 import zipfile
+from collections.abc import Hashable, Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -9,7 +11,8 @@ DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "real_data"
 UCI = "https://archive.ics.uci.edu/static/public"
 
 
-def save(df, target, subdir, name, extra=()):
+def save(df: pd.DataFrame, target: Hashable, subdir: str, name: str,
+         extra: Sequence[str] = ()) -> None:
     # extra: kolumny zapisywane pod oryginalną nazwą (nie są cechami)
     y = df.pop(target)
     meta = df[list(extra)]
@@ -23,7 +26,7 @@ def save(df, target, subdir, name, extra=()):
     print(f"Saved {subdir}/{name}.parquet: {df.shape[0]} samples, {df.shape[1] - 1 - len(extra)} features")
 
 
-def main():
+def main() -> None:
     zip_bytes = urllib.request.urlopen(f"{UCI}/279/susy.zip").read()
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
         susy = pd.read_csv(z.open("SUSY.csv.gz"), compression="gzip", header=None)

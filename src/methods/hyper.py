@@ -1,48 +1,31 @@
-"""HYPER: instance-based pruning z nieparametrycznym a priori rozkładu głosów
-(Soto, Suárez, Martínez-Muñoz, "An urn model for majority voting in
-classification ensembles", NIPS 2016).
+"""HYPER: instance-based pruning z a priori rozkładu głosów szacowanym z danych
+(Soto, Suárez, Martínez-Muñoz, "An urn model for majority voting in classification
+ensembles", NIPS 2016). Model i algorytm: implementacja.md, rozdz. 5."""
+from typing import Self
 
-Las dla jednej próbki to urna z T kulami (drzewa) w l kolorach (klasy); skład urny
-T = (T_1..T_l) jest nieznany, a odpytywanie drzew to losowanie bez zwracania.
-Po zebraniu głosów t = (t_1..t_l) rozkład a posteriori składu urny (wzór (2)) to
-
-    P(T | t)  ~  C(T_1, t_1) * ... * C(T_l, t_l) * P(T)
-
-a P*(t, T) (wzór (3)) to suma P(T | t) po składach, w których wygrywa ta sama klasa
-co w t. Głosowanie przerywamy, gdy P*(t, T) >= pi.
-
-IB pruning (SIBA) to ten sam model z jednostajnym P(T). Tutaj P(T) jest szacowane
-z głosów out-of-bag na zbiorze uczącym, więc tablica progów zależy od danych
-i jest liczona w fit(), a nie czytana z pliku.
-"""
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.ndimage import uniform_filter
 from scipy.special import gammaln
+from sklearn.ensemble import RandomForestClassifier
 
 from generate_table_IB import pi_tag
 
-from .base import SequentialPruning
+from .base import BoolArray, FloatArray, IntArray, SequentialPruning
 from .oob import glosy_oob
 
 # największa dopuszczalna liczba komórek (T+1)^(l-1) rozkładu a priori
 MAX_CELLS = 2_000_000
 
 
-def prior_z_glosow(votes, T, smooth=5):
-    """Nieparametryczne a priori P(T) z głosów (np. out-of-bag), rozdz. 2.2.
-
-    Głosy każdej próbki są przeskalowane do zespołu T drzew, T_i ~ T * votes_i / sum(votes)
-    (zaokrąglenie metodą największych reszt, żeby suma wyszła dokładnie T), a histogram
-    składów jest wygładzony oknem przesuwnym o szerokości smooth.
-
-    Zwraca tablicę o kształcie (T+1,)^(l-1): prior[T_1, ..., T_{l-1}], gdzie
-    T_l = T - (T_1 + ... + T_{l-1}); komórki o sumie > T mają 0.
-    """
+def prior_z_glosow(votes: ArrayLike, T: int, smooth: int = 5) -> FloatArray:
+    """A priori składu urny z głosów (n, l): tablica (T+1,)^(l-1) indeksowana T_1..T_{l-1}."""
     votes = np.asarray(votes)
     votes = votes[votes.sum(axis=1) > 0]
     if len(votes) == 0:
         raise ValueError("brak głosów do oszacowania a priori (żadna próbka nie jest out-of-bag)")
     l = votes.shape[1]
+    # głosy przeskalowane do T drzew; metoda największych reszt daje sumę dokładnie T
     ideal = T * votes / votes.sum(axis=1, keepdims=True)
     sklad = np.floor(ideal).astype(int)
     brakuje = T - sklad.sum(axis=1)                             # 0..l-1 głosów do rozdania
@@ -52,17 +35,16 @@ def prior_z_glosow(votes, T, smooth=5):
     prior = np.zeros((T + 1,) * (l - 1))
     np.add.at(prior, tuple(sklad[:, :-1].T), 1)
     if smooth and smooth > 1:
-        # filtr liczy sumy kroczące i potrafi zostawić wartości rzędu -1e-20 zamiast 0;
-        # ujemne "prawdopodobieństwo" dawało potem nan w całej tablicy progów
+        # filtr potrafi zostawić wartości rzędu -1e-20 zamiast 0, a ujemne
+        # "prawdopodobieństwo" daje potem nan w całej tablicy progów
         prior = np.clip(uniform_filter(prior, size=smooth, mode="constant"), 0, None)
     prior[np.indices(prior.shape).sum(axis=0) > T] = 0          # składy niemożliwe
     return prior / prior.sum()
 
 
-def _lider(votes):
-    """Dla votes (n, l): indeks klasy prowadzącej (remis -> niższy indeks, jak w argmax
-    pełnego głosowania), jej liczba głosów oraz głosy pozostałych klas (n, l-1)
-    w kolejności klas."""
+def _lider(votes: IntArray) -> tuple[IntArray, IntArray, IntArray]:
+    """Dla votes (n, l): indeks klasy prowadzącej (remis -> niższy indeks), jej głosy
+    oraz głosy pozostałych klas (n, l-1) w kolejności klas."""
     l = votes.shape[1]
     wiersze = np.arange(len(votes))
     c = votes.argmax(axis=1)
@@ -70,25 +52,9 @@ def _lider(votes):
     return c, votes[wiersze, c], votes[wiersze[:, None], kolumny]
 
 
-def tablica_hyper(prior, pi):
-    """Tablica progów HYPER dla a priori prior (patrz prior_z_glosow) i poziomu pi.
-
-        prog[c, <głosy pozostałych klas w kolejności klas>] = najmniejsza liczba głosów
-        klasy prowadzącej c, od której P*(t, T) >= pi
-
-    Klasy nie są wymienne (a priori nie jest symetryczne), więc każda klasa
-    prowadząca ma własną tablicę. Jeśli P* nie jest monotoniczne, próg leży za
-    ostatnim stanem z P* < pi, więc każde przerwanie spełnia P* >= pi.
-
-    Liczenie: niech h(t) = suma po T z P(T) * P(konkretna kolejność głosów o liczbach t | T),
-    a g_c(t) to ta sama suma tylko po składach T, w których wygrywa klasa c. Wtedy
-    P*(t, T) = g_c(t) / h(t) dla c = klasa prowadząca w t, a obie funkcje spełniają
-
-        f(t) = suma_i f(t + e_i)        (następny głos trafia do którejś klasy)
-
-    z warunkiem brzegowym f(T) = P(T) / (T! / (T_1! ... T_l!)) dla kompletu głosów.
-    Idziemy więc warstwami od T głosów w dół; stanów jest C(T + l, l).
-    """
+def tablica_hyper(prior: FloatArray, pi: float) -> IntArray:
+    """prog[c, <głosy pozostałych klas>] = najmniejsza liczba głosów klasy prowadzącej c,
+    od której P*(t, T) >= pi."""
     l, T = prior.ndim + 1, prior.shape[0] - 1
     ksztalt = prior.shape
     siatka = np.indices(ksztalt).reshape(l - 1, -1)             # t_1..t_{l-1} każdej komórki
@@ -128,30 +94,27 @@ def tablica_hyper(prior, pi):
     return prog
 
 
-def czy_stop_hyper(votes, prog):
-    """Maska stopu dla votes o kształcie (n_próbek, l) i tablicy z tablica_hyper."""
+def czy_stop_hyper(votes: IntArray, prog: IntArray) -> BoolArray:
     c, top, reszta = _lider(votes)
     return top >= prog[(c, *reszta.T)]
 
 
 class Hyper(SequentialPruning):
-    """Instance-based pruning z a priori rozkładu głosów szacowanym z danych (HYPER).
+    """Instance-based pruning z a priori rozkładu głosów szacowanym z głosów out-of-bag."""
 
-        Hyper(pi=0.99)    poziom ufności: przerwij, gdy P*(t, T) >= pi
-        n_prior           ile próbek uczących użyć do głosów out-of-bag (None = wszystkie)
-        smooth            szerokość okna wygładzającego a priori (artykuł: 5; 0 = bez)
+    pi: float
+    prior: FloatArray
+    prog: IntArray
 
-    fit(rf, X_train) wymaga danych, na których uczono las (bootstrap=True).
-    Po fit: prior (rozkład a priori składu urny) i prog (tablica progów).
-    """
-
-    def __init__(self, pi=0.99, n_prior=20000, smooth=5, name=None):
+    def __init__(self, pi: float = 0.99, n_prior: int | None = 20000, smooth: int = 5,
+                 name: str | None = None) -> None:
         if not 0 < pi <= 1:
             raise ValueError(f"Hyper: pi musi być w (0, 1], a jest {pi}")
         self.pi, self.n_prior, self.smooth = pi, n_prior, smooth
         super().__init__(name or f"HYPER_pi{pi_tag(pi)}")
 
-    def fit(self, rf, X_train=None, y_train=None):
+    def fit(self, rf: RandomForestClassifier, X_train: ArrayLike | None = None,
+            y_train: ArrayLike | None = None) -> Self:
         super().fit(rf)
         if X_train is None:
             raise ValueError(f"{self.name}: fit(rf, X_train) wymaga danych uczących lasu "
@@ -163,17 +126,15 @@ class Hyper(SequentialPruning):
         self.prog = tablica_hyper(self.prior, self.pi)
         return self
 
-    def _stop_batch(self, votes):
+    def _stop_batch(self, votes: IntArray) -> BoolArray:
         return czy_stop_hyper(votes, self.prog)
 
-    def _stop_one(self, votes):
+    def _stop_one(self, votes: IntArray) -> bool:
         c = int(votes.argmax())
-        return votes[c] >= self.prog[(c, *np.delete(votes, c))]
+        return bool(votes[c] >= self.prog[(c, *np.delete(votes, c))])
 
-    def expected_trees(self, n_sim=2000, seed=0):
-        """Oczekiwana liczba odpytanych drzew na próbkę, oszacowana metodą Monte Carlo
-        tylko z a priori i tablicy progów (bez danych testowych): losujemy skład urny
-        z prior, ustawiamy głosy w losowej kolejności i liczymy je aż do stopu."""
+    def expected_trees(self, n_sim: int = 2000, seed: int = 0) -> float:
+        """Oczekiwana liczba odpytanych drzew na próbkę, Monte Carlo z samego a priori."""
         rng = np.random.default_rng(seed)
         kom = rng.choice(self.prior.size, size=n_sim, p=self.prior.ravel())
         czesc = np.column_stack(np.unravel_index(kom, self.prior.shape))
@@ -184,4 +145,4 @@ class Hyper(SequentialPruning):
             votes = np.cumsum(glosy[:, None] == np.arange(self.l), axis=0)
             stop = self._stop_batch(votes)
             n_used[j] = stop.argmax() + 1 if stop.any() else self.T
-        return n_used.mean()
+        return float(n_used.mean())

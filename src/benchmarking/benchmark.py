@@ -1,71 +1,100 @@
-"""Benchmark metod jednego lasu na jednym zbiorze testowym."""
+"""Benchmark metod jednego lasu na jednym zbiorze testowym (opis: implementacja.md, rozdz. 9)."""
 import json
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Self
 
 import numpy as np
 import pandas as pd
+from numpy.typing import ArrayLike, NDArray
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 from methods import FullVoting, SklearnRF
+from methods.base import FloatArray, IntArray, Labels
 
-from .modes import SUPPORTED_MODES, check_modes
+from .forest_methods import methods_rf
+from .modes import SUPPORTED_MODES, Mode, check_modes
 
 
 class benchmark:
-    """Uruchamia wszystkie metody z methods_rf w wybranych scenariuszach
-    (patrz benchmarking.modes) i porównuje je metrykami jakości, zgodnością
-    z rf_sklearn / full_voting oraz czasem predykcji.
-
-    Kolumny porównania z metodą odniesienia (agree_*, speedup_vs_*) są w wynikach
-    tylko wtedy, gdy ta metoda jest w zbiorze (np. bez rf_sklearn, gdy
-    sklearn_soft_voting = false)."""
+    """Uruchamia metody z methods_rf w wybranych scenariuszach i porównuje je jakością,
+    zgodnością z metodami odniesienia oraz czasem predykcji."""
 
     REF_RF = SklearnRF.name
     REF_FULL = FullVoting.name
 
-    def __init__(self, models, X_test, y_test, metadata=None, n_online=500, n_repeats=1):
-        self.models = models
-        self.X_test = np.asarray(X_test)
-        self.y_test = np.asarray(y_test)
-        self.n_online = min(n_online, len(self.X_test))
+    def __init__(self, models: methods_rf, X_test: ArrayLike, y_test: ArrayLike,
+                 metadata: Mapping[str, Any] | None = None, n_online: int = 500,
+                 n_repeats: int = 1) -> None:
+        self.models: methods_rf | None = models
+        self.X_test: NDArray[Any] | None = np.asarray(X_test)
+        self.y_test: Labels = np.asarray(y_test)
+        self.n_test = len(self.X_test)
+        self.n_online = min(n_online, self.n_test)
         self.n_repeats = n_repeats
-        self.metadata = dict(metadata or {})
+        self.T, self.classes = models.T, models.classes
+        self.names: list[str] = []
+        self.pi_levels: dict[str, float] = {}       # nazwa -> pi (tylko metody, które mają pi)
+        self._snapshot_methods(models)
+        self.metadata: dict[str, Any] = dict(metadata or {})
         self.metadata.update(
-            T=models.T, l=models.l, n_test=len(self.X_test), n_online=self.n_online,
-            n_repeats=n_repeats, methods=models.names,
+            T=models.T, l=models.l, n_test=self.n_test, n_online=self.n_online,
+            n_repeats=n_repeats, methods=self.names,
             date=datetime.now().isoformat(timespec="seconds"),
         )
-        self.Y_pred, self.N_used, self.times = {}, {}, {}
+        self.Y_pred: dict[Mode, Labels] = {}
+        self.N_used: dict[Mode, IntArray] = {}
+        self.times: dict[Mode, FloatArray] = {}
+        self._results: dict[Mode, pd.DataFrame] = {}
 
-    def _X_y(self, mode):
-        if mode == "batch":
-            return self.X_test, self.y_test
-        return self.X_test[: self.n_online], self.y_test[: self.n_online]
+    def _snapshot_methods(self, models: methods_rf) -> None:
+        self.names = list(models.names)
+        self.pi_levels = {m.name: m.pi for m in models.methods if m.pi is not None}
 
-    def run(self, modes=SUPPORTED_MODES):
+    def _n(self, mode: Mode) -> int:
+        return self.n_test if mode == "batch" else self.n_online
+
+    def run(self, modes: Sequence[str] = SUPPORTED_MODES) -> Self:
+        if self.models is None or self.X_test is None:
+            raise RuntimeError("benchmark po release() nie ma już lasu ani X_test; "
+                               "utwórz nowy benchmark")
+        self._snapshot_methods(self.models)         # metody mogły dojść po __init__
+        self.metadata["methods"] = self.names
         for mode in check_modes(modes):
-            X, _ = self._X_y(mode)
-            Y, N, t = self.models.run(X, mode=mode, n_repeats=self.n_repeats)
+            Y, N, t = self.models.run(self.X_test[: self._n(mode)], mode=mode,
+                                      n_repeats=self.n_repeats)
             self.Y_pred[mode], self.N_used[mode], self.times[mode] = Y, N, t
+            self._results.pop(mode, None)
         return self
 
-    def _ref(self, name):
-        """Indeks metody odniesienia (albo None, jeśli jej nie ma)."""
-        names = self.models.names
-        return names.index(name) if name in names else None
+    def release(self) -> Self:
+        """Zwalnia las, dane uczące i X_test. Wyniki zostają, run() przestaje działać."""
+        self.models = None
+        self.X_test = None
+        return self
 
-    def results(self, mode="batch"):
+    def _ref(self, name: str) -> int | None:
+        return self.names.index(name) if name in self.names else None
+
+    def results(self, mode: Mode = "batch") -> pd.DataFrame:
+        """Tabela wyników, wiersz na metodę; liczona raz na scenariusz."""
         if mode not in self.Y_pred:
             raise RuntimeError(f"brak wyników dla '{mode}', najpierw wywołaj run()")
+        if mode not in self._results:
+            self._results[mode] = self._compute_results(mode)
+        return self._results[mode].copy()
+
+    def _compute_results(self, mode: Mode) -> pd.DataFrame:
         Y, N, times = self.Y_pred[mode], self.N_used[mode], self.times[mode]
-        _, y_true = self._X_y(mode)
-        refs = {"rf": self._ref(self.REF_RF), "full": self._ref(self.REF_FULL)}
-        refs = {k: i for k, i in refs.items() if i is not None}
+        y_true = self.y_test[: self._n(mode)]
+        # kolumny agree_* i speedup_vs_* są tylko dla metod odniesienia obecnych w zbiorze
+        refs = {k: i for k, i in (("rf", self._ref(self.REF_RF)),
+                                  ("full", self._ref(self.REF_FULL))) if i is not None}
         n = Y.shape[1]
 
         rows = []
-        for i, name in enumerate(self.models.names):
+        for i, name in enumerate(self.names):
             y = Y[i]
             row = {
                 "method": name,
@@ -84,12 +113,12 @@ class benchmark:
                 trees_mean=N[i].mean(),
                 trees_median=np.median(N[i]),
                 trees_max=N[i].max(),
-                trees_frac=N[i].mean() / self.models.T,
+                trees_frac=N[i].mean() / self.T,
             )
             rows.append(row)
         return pd.DataFrame(rows).set_index("method")
 
-    def summary(self):
+    def summary(self) -> None:
         print("metadane:")
         for k, v in self.metadata.items():
             print(f"  {k}: {v}")
@@ -100,10 +129,10 @@ class benchmark:
                 print(f"\n[{mode}] ({n} próbek)")
                 print(self.results(mode))
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, Any]:
         d = {"metadata": json.dumps(self.metadata, default=str),
-             "names": np.array(self.models.names),
-             "classes": self.models.classes,
+             "names": np.array(self.names),
+             "classes": self.classes,
              "y_test": self.y_test}
         for mode in self.Y_pred:
             d[f"Y_pred_{mode}"] = self.Y_pred[mode]
@@ -111,7 +140,7 @@ class benchmark:
             d[f"times_{mode}"] = self.times[mode]
         return d
 
-    def save(self, path):
+    def save(self, path: str | Path) -> Path:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(path, **self.to_dict())

@@ -1,5 +1,8 @@
+"""Generuje syntetyczne zbiory danych (.parquet) do data/generated/."""
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -9,9 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import SEED  # noqa: E402
 
 
-def main():
-    DATA_DIR = Path(__file__).resolve().parents[2] / "data" /"generated"
-    BINARY = {
+Params = dict[str, Any]         # argumenty generatora scikit-learn dla jednego zbioru
+
+
+def main() -> None:
+    DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "generated"
+    BINARY: dict[str, Params] = {
         "binary_small": dict(n_samples=1_000, n_features=10, n_informative=5, n_redundant=2, n_classes=2, flip_y=0.02),
         "binary_large": dict(n_samples=500_000, n_features=20, n_informative=10, n_redundant=5, n_classes=2, flip_y=0.02),
         "imbalanced": dict(n_samples=10_000, n_features=20, n_informative=8, n_redundant=4, n_classes=2, weights=[0.95, 0.05], flip_y=0.02),
@@ -24,8 +30,7 @@ def main():
         "collinear_unscaled": dict(n_samples=20_000, n_features=40, n_informative=8, n_redundant=24, n_repeated=4, n_classes=2, shift=None, scale=None),
         "outliers": dict(n_samples=20_000, n_features=20, n_informative=10, n_redundant=4, n_classes=2, flip_y=0.02),
     }
-    MULTICLASS = {
-
+    MULTICLASS: dict[str, Params] = {
         "multi_small": dict(n_samples=1_000, n_features=10, n_informative=5, n_redundant=2, n_classes=4, flip_y=0.02),
         "multi_large": dict(n_samples=500_000, n_features=20, n_informative=10, n_redundant=5, n_classes=5, flip_y=0.02),
         "multi_imbalanced": dict(n_samples=10_000, n_features=20, n_informative=8, n_redundant=4, n_classes=4, weights=[0.7, 0.2, 0.07, 0.03], flip_y=0.02),
@@ -39,7 +44,7 @@ def main():
         "multi_collinear_unscaled": dict(n_samples=20_000, n_features=40, n_informative=8, n_redundant=24, n_repeated=4, n_classes=4, shift=None, scale=None),
         "multi_outliers": dict(n_samples=20_000, n_features=20, n_informative=10, n_redundant=4, n_classes=4, flip_y=0.02),
     }
-    REGRESSION = {
+    REGRESSION: dict[str, Params] = {
         "reg_small": dict(n_samples=1_000, n_features=10, n_informative=5, noise=10.0),
         "reg_large": dict(n_samples=500_000, n_features=20, n_informative=10, noise=10.0),
         "reg_check": dict(n_samples=100_000, n_features=5, n_informative=5, noise=1.0),
@@ -51,18 +56,18 @@ def main():
         "reg_outliers": dict(n_samples=20_000, n_features=20, n_informative=10, noise=10.0),
     }
     # make_regression jest liniowe, więc nieliniową zależność daje Friedman #1 (używa tylko pierwszych 5 cech)
-    NONLINEAR_REGRESSION = {
+    NONLINEAR_REGRESSION: dict[str, Params] = {
         "reg_hard_nonlinear": dict(n_samples=20_000, n_features=10, noise=1.0),
     }
     # (generator, zbiory, podfolder w DATA_DIR)
-    GENERATORS = [
+    GENERATORS: list[tuple[Callable[..., Any], dict[str, Params], str]] = [
         (make_classification, BINARY, "binary"),
         (make_classification, MULTICLASS, "multiclass"),
         (make_regression, REGRESSION, "regression"),
         (make_friedman1, NONLINEAR_REGRESSION, "regression"),
     ]
     # fraction: odsetek wierszy z outlierami, scale: siła zaburzenia w odchyleniach std cechy
-    OUTLIERS = {
+    OUTLIERS: dict[str, dict[str, float]] = {
         "outliers": dict(fraction=0.02, scale=10.0),
         "multi_outliers": dict(fraction=0.02, scale=10.0),
         "reg_outliers": dict(fraction=0.02, scale=10.0),

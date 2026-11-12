@@ -1,58 +1,30 @@
-"""GLEE: Gaussian Lazy Ensemble Evaluation, czyli reguła wczesnego stopu z artykułu
-Basilico, Munson, Kolda, Dixon, Kegelmeyer, "COMET: A Recipe for Learning and Using
-Large Ensembles on Massive Data" (ICDM 2011, arXiv:1103.2068), rozdz. II-C.
+"""GLEE: Gaussian Lazy Ensemble Evaluation, reguła wczesnego stopu z artykułu Basilico,
+Munson, Kolda, Dixon, Kegelmeyer, "COMET: A Recipe for Learning and Using Large Ensembles
+on Massive Data" (ICDM 2011, arXiv:1103.2068), rozdz. II-C. Opis: implementacja.md, rozdz. 6."""
+from typing import Self
 
-Głos drzewa to zmienna Bernoulliego, więc odsetek głosów klasy prowadzącej p^ po n
-głosach ma w przybliżeniu rozkład normalny. Głosowanie przerywamy, gdy dolna granica
-jednostronnego przedziału ufności (1 - alfa) dla p leży powyżej 0.5:
-
-    p^ - rho * delta > 0.5
-    delta = z_alfa * sqrt(p^ * (1 - p^) / n)
-    rho   = sqrt((m - n) / (m - 1))  jeśli n > 0.05 * m,  inaczej 1
-
-gdzie m to liczba drzew, a rho to poprawka na populację skończoną (FPC): drzewa są
-losowane bez zwracania, więc niepewność maleje, gdy zostaje ich mało. Przybliżenie
-normalne wymaga minimalnej liczby głosów (min_votes), zanim wolno przerwać.
-
-W artykule alfa to największa dopuszczalna częstość niezgodności z pełnym głosowaniem;
-tutaj podaje się pi = 1 - alfa, tak jak w IB pruning i HYPER.
-
-Dla wielu klas (przypis 1 w artykule) klasa prowadząca jest traktowana jak klasa 1,
-a druga w kolejności jak klasa 0: p^ = t_1 / (t_1 + t_2), n = t_1 + t_2.
-
-Z COMET zaimplementowana jest tylko ta reguła. Uczenie (MapReduce, IVoting) dotyczy
-budowy zespołu, a nie inferencji na gotowym lesie.
-"""
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.special import ndtri
+from sklearn.ensemble import RandomForestClassifier
 
 from generate_table_IB import pi_tag
 
-from .base import SequentialPruning
+from .base import BoolArray, IntArray, SequentialPruning
 
 
-def min_glosow(alfa):
-    """Minimalna liczba głosów przed stopem zalecana w artykule:
-    15, 30 i 45 dla alfa = 1e-2, 1e-3 i 1e-4 (dla pośrednich alfa: wartość ostrzejsza)."""
+def min_glosow(alfa: float) -> int:
+    """Minimalna liczba głosów przed stopem zalecana w artykule: 15, 30 i 45 dla
+    alfa = 1e-2, 1e-3 i 1e-4 (dla pośrednich alfa wartość ostrzejsza)."""
     if alfa >= 1e-2:
         return 15
     return 30 if alfa >= 1e-3 else 45
 
 
-def tablica_glee(T, alfa, min_votes=None, fpc=True, one_sided=True):
-    """Tablica progów GLEE dla zespołu T drzew:
-
-        prog[t_2] = najmniejsze t_1, przy którym p^ - rho * delta > 0.5
-                    (T + 1, jeśli przy tym t_2 nie da się przerwać)
-
-    gdzie t_1 >= t_2 to głosy klasy prowadzącej i drugiej w kolejności. Przy ustalonym
-    t_2 dolna granica przedziału rośnie z t_1, więc próg wystarcza do decyzji.
-
-        fpc=False        bez poprawki na populację skończoną (warianty G1, G2 z artykułu)
-        one_sided=False  przedział dwustronny, z_{alfa/2} (warianty G2, G2-FPC)
-
-    Domyślne ustawienia to G1-FPC, czyli reguła nazywana w artykule GLEE.
-    """
+def tablica_glee(T: int, alfa: float, min_votes: int | None = None, fpc: bool = True,
+                 one_sided: bool = True) -> IntArray:
+    """prog[t_2] = najmniejsze t_1, przy którym wolno przerwać (T + 1: nie da się);
+    t_1 >= t_2 to głosy klasy prowadzącej i drugiej w kolejności."""
     if min_votes is None:
         min_votes = min_glosow(alfa)
     z = ndtri(1 - (alfa if one_sided else alfa / 2))
@@ -70,27 +42,19 @@ def tablica_glee(T, alfa, min_votes=None, fpc=True, one_sided=True):
     return prog.astype(np.min_scalar_type(T + 1))
 
 
-def czy_stop_glee(votes, prog):
-    """Maska stopu dla votes o kształcie (n_próbek, l) i tablicy z tablica_glee."""
+def czy_stop_glee(votes: IntArray, prog: IntArray) -> BoolArray:
     t = np.partition(votes, -2, axis=1)             # dwie ostatnie kolumny: t_2, t_1
     return t[:, -1] >= prog[t[:, -2]]
 
 
 class Glee(SequentialPruning):
-    """Wczesny stop z gaussowskim przedziałem ufności (GLEE z artykułu COMET).
+    """Stop, gdy dolna granica przedziału ufności dla odsetka głosów lidera przekroczy 0.5."""
 
-        Glee(pi=0.99)   przerwij, gdy z ufnością pi klasa prowadząca wygra pełne
-                        głosowanie (alfa = 1 - pi w artykule)
-        min_votes       ile głosów (klasy prowadzącej i drugiej łącznie) trzeba zebrać
-                        przed stopem; None = wartość z artykułu dla danego alfa
-        fpc             poprawka na populację skończoną (artykuł: tak)
-        one_sided       przedział jednostronny (artykuł: tak)
+    pi: float
+    prog: IntArray
 
-    Tablica progów zależy tylko od T i parametrów, jest liczona w fit() w czasie O(T^2)
-    i działa dla dowolnej liczby klas (nie potrzeba pliku ani danych uczących).
-    """
-
-    def __init__(self, pi=0.99, min_votes=None, fpc=True, one_sided=True, name=None):
+    def __init__(self, pi: float = 0.99, min_votes: int | None = None, fpc: bool = True,
+                 one_sided: bool = True, name: str | None = None) -> None:
         if not 0.5 < pi <= 1:
             raise ValueError(f"Glee: pi musi być w (0.5, 1], a jest {pi}")
         if min_votes is not None and min_votes < 1:
@@ -99,14 +63,15 @@ class Glee(SequentialPruning):
         self.min_votes, self.fpc, self.one_sided = min_votes, fpc, one_sided
         super().__init__(name or f"GLEE_pi{pi_tag(pi)}")
 
-    def fit(self, rf, X_train=None, y_train=None):
+    def fit(self, rf: RandomForestClassifier, X_train: ArrayLike | None = None,
+            y_train: ArrayLike | None = None) -> Self:
         super().fit(rf)
         self.prog = tablica_glee(self.T, self.alfa, self.min_votes, self.fpc, self.one_sided)
         return self
 
-    def _stop_batch(self, votes):
+    def _stop_batch(self, votes: IntArray) -> BoolArray:
         return czy_stop_glee(votes, self.prog)
 
-    def _stop_one(self, votes):
+    def _stop_one(self, votes: IntArray) -> bool:
         t = np.sort(votes)
-        return t[-1] >= self.prog[t[-2]]
+        return bool(t[-1] >= self.prog[t[-2]])

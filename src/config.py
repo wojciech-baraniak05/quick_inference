@@ -1,12 +1,13 @@
 """Project configuration read from config.toml in the repository root."""
 import tomllib
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config.toml"
 
 with CONFIG_PATH.open("rb") as f:
-    _config = tomllib.load(f)
+    _config: dict[str, Any] = tomllib.load(f)
 
 SEED: int = int(_config["seed"])
 
@@ -26,5 +27,5 @@ _forest = _config["forest"]
 N_TREES: int = int(_forest["n_trees"])
 MAX_DEPTH: int | None = _forest.get("max_depth")   # brak klucza = bez limitu głębokości
 
-# [[methods]]
-METHODS: list[dict] = list(_config.get("methods", []))
+# [[methods]]: jeden słownik na blok, np. {"type": "ib_pruning", "pi": 0.98}
+METHODS: list[dict[str, Any]] = list(_config.get("methods", []))

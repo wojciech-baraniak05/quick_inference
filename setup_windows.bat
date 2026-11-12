@@ -1,5 +1,6 @@
 @echo off
-rem Sets up the .venv virtual environment, installs requirements.txt,
+rem Sets up the .venv virtual environment, installs requirements-dev.txt
+rem (runtime packages plus the notebook tooling),
 rem generates the synthetic datasets and downloads the real ones.
 rem Usage: setup_windows.bat [--force-download]
 setlocal
@@ -15,12 +16,12 @@ if not defined PY (
     where python >nul 2>&1 && set "PY=python"
 )
 if not defined PY (
-    echo [ERROR] Python not found. Install Python 3.11+ from https://www.python.org/downloads/
+    echo [ERROR] Python not found. Install Python 3.12+ from https://www.python.org/downloads/
     exit /b 1
 )
-%PY% -c "import sys; sys.exit(sys.version_info < (3, 11))"
+%PY% -c "import sys; sys.exit(sys.version_info < (3, 12))"
 if errorlevel 1 (
-    echo [ERROR] Python 3.11+ is required ^(config.py uses tomllib^).
+    echo [ERROR] Python 3.12+ is required ^(the pinned numpy and scipy need it^).
     exit /b 1
 )
 
@@ -35,7 +36,7 @@ if exist "%VPY%" (
 rem --- Install requirements
 echo [2/4] Installing requirements ...
 "%VPY%" -m pip install --upgrade pip || goto :fail
-"%VPY%" -m pip install -r requirements.txt || goto :fail
+"%VPY%" -m pip install -r requirements-dev.txt || goto :fail
 
 if not exist "config.toml" (
     echo [ERROR] config.toml not found in %CD%.
