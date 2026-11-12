@@ -22,7 +22,8 @@ print(f"las: {cfg.N_TREES} drzew, max_depth={cfg.MAX_DEPTH}, "
 print(f"metody: {nazwy}")
 
 # %%
-suite = benchmark_suite(keys=("dataset", "seed"))
+# out_dir: każdy przebieg jest zapisywany od razu po policzeniu (runs/*.npz + tabele .csv)
+suite = benchmark_suite(keys=("dataset", "seed"), out_dir=OUT_DIR)
 
 for plik in datasets:
     X, y = wczytaj(plik)
@@ -51,6 +52,7 @@ for plik in datasets:
                                 "sklearn_soft_voting": cfg.SKLEARN_SOFT_VOTING},
                       n_online=cfg.N_ONLINE, n_repeats=cfg.N_REPEATS)
         b.run(modes=MODES)
+        b.release()                 # suite trzyma wyniki do końca, lasu i danych nie musi
         suite.add(b)
 
         r = b.results(MODES[0])
@@ -70,8 +72,7 @@ suite.summary()
 # %%
 # przebiegi, w których zgodność metody z wczesnym stopem (IB, HYPER, GLEE) z pełnym
 # głosowaniem spadła poniżej jej pi
-poziomy = {meth.name: meth.pi for b in suite.runs for meth in b.models.methods
-           if getattr(meth, "pi", None) is not None}
+poziomy = {name: pi for b in suite.runs for name, pi in b.pi_levels.items()}
 for mode in suite.modes:
     df = suite.results(mode)
     if "agree_full" not in df:
@@ -85,7 +86,7 @@ for mode in suite.modes:
             print(ponizej.to_string())
 
 # %%
-suite.save(OUT_DIR)
+suite.save()                        # przebiegi są już zapisane; to odświeża komplet plików
 print(f"zapisano wyniki do {OUT_DIR}")
 
 # %%

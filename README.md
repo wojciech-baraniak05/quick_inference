@@ -25,7 +25,8 @@ it queries the same number of trees for every sample.
 
 ## How to run?
 
-Requires Python 3.11 or newer. `requirements.txt` is pinned against Python 3.15.
+Requires Python 3.12 or newer (the pinned numpy and scipy do not support 3.11).
+The pins were last tested on Python 3.15.
 
 ### Windows: one script
 
@@ -36,7 +37,7 @@ setup_windows.bat
 The script:
 
 1. creates a virtual environment in `.venv` (or reuses an existing one),
-2. installs `requirements.txt`,
+2. installs `requirements-dev.txt` (the runtime packages plus Jupyter, matplotlib and seaborn),
 3. generates the synthetic datasets into `data/generated/`,
 4. downloads the real datasets into `data/real_data/`.
 
@@ -59,7 +60,8 @@ Then activate the environment:
    ```
 2. Install the requirements:
    ```sh
-   pip install -r requirements.txt
+   pip install -r requirements.txt        # benchmark and dataset scripts only
+   pip install -r requirements-dev.txt    # the above, plus notebooks and "# %%" cells
    ```
 3. Generate and download the datasets:
    ```sh
@@ -250,7 +252,10 @@ python testing.py
 ```
 
 You can also run its `# %%` cells interactively in VS Code.
-Results are written to `data/<benchmark.out_dir>/`.
+Results are written to `data/<benchmark.out_dir>/`. Each (dataset, seed) run is saved as soon
+as it finishes (`runs/<dataset>_seed<seed>.npz`, and the `.csv` tables are rewritten), so an
+interrupted benchmark keeps what it has computed. After a run the forest and the data are
+released (`benchmark.release()`); only the predictions and timings stay in memory.
 
 Reported per method: accuracy, macro precision/recall/F1, agreement with sklearn and with
 full voting (`agree_rf`, `agree_full`), prediction time, speed-up, and trees queried per sample
@@ -259,11 +264,19 @@ The `*_rf` and `*_full` columns appear only when `rf_sklearn` and `full_voting` 
 
 ### Adding an inference method
 
+The code is type-annotated and keeps docstrings short; the reasoning behind each module is in
+[`implementacja.md`](implementacja.md) (in Polish).
+
 Create a module in [`src/methods/`](src/methods/) with a subclass of `InferenceMethod`
 (from `methods/base.py`) and implement:
 
 - `predict_batch(X) -> (y_pred, n_used)`
 - `predict_one(x) -> (y, n_used)`
+
+After `fit`, `self.trees` is a list of `FastTree` objects (from `methods/base.py`), not
+scikit-learn estimators. `tree.predict(X)` returns class indices and skips scikit-learn's
+per-call input validation, so call `X = self._X32(X)` once at the start of a prediction
+(it converts to `float32` and checks the shape) and pass that `X` to the trees.
 
 An early-stopping method only needs a stopping rule: subclass `SequentialPruning` and
 implement `_stop_batch(votes) -> bool mask` (the query loops are shared by IB pruning, HYPER and GLEE).
@@ -296,9 +309,12 @@ m.add_method(MyMethod())
 ## Project layout
 
 ```
+instrukcja.md                what the project and the methods do, data and result formats (Polish)
+implementacja.md             code-level notes: table conventions, derivations, non-obvious spots (Polish)
 config.toml                  project settings (datasets, benchmark, forest, methods)
 setup_windows.bat            venv + requirements + datasets
-requirements.txt
+requirements.txt             runtime packages
+requirements-dev.txt         runtime + notebook tooling
 data/
   generated/                 synthetic datasets (generated, git-ignored)
   real_data/                 UCI datasets (downloaded, git-ignored)
@@ -307,8 +323,9 @@ data/
 src/
   config.py                  reads config.toml
   methods/                   inference methods, one module each
-    base.py                  InferenceMethod interface, FixedVoting (fixed tree list),
-                             SequentialPruning (per-sample early-stopping loop)
+    base.py                  InferenceMethod interface, FastTree (tree evaluation without
+                             scikit-learn's per-call validation), FixedVoting (fixed tree
+                             list), SequentialPruning (per-sample early-stopping loop)
     voting.py                rf_sklearn (soft voting), full_voting (hard voting)
     ib_pruning.py            IB pruning (uniform prior, table from file)
     hyper.py                 HYPER (out-of-bag prior, table computed in fit)

@@ -1,20 +1,25 @@
-"""Statystyczny instance-based pruning (Hernández-Lobato i in., 2009)."""
+"""Statystyczny instance-based pruning (Hernández-Lobato i in., 2009).
+Opis: implementacja.md, rozdz. 4."""
 from functools import lru_cache
+from pathlib import Path
+from typing import Self
 
 import numpy as np
+from numpy.typing import ArrayLike
+from sklearn.ensemble import RandomForestClassifier
 
 from generate_table_IB import TABLE_DIR, czy_stop, pi_tag, plik_tablicy
 
-from .base import SequentialPruning
+from .base import BoolArray, IntArray, Order, SequentialPruning
 
 
 @lru_cache(maxsize=None)
-def _wczytaj_npz(path):
+def _wczytaj_npz(path: str) -> tuple[IntArray, float]:
     d = np.load(path)
     return d["prog"], float(d["pi"])
 
 
-def wczytaj_tablice(plik, podpowiedz=""):
+def wczytaj_tablice(plik: str | Path, podpowiedz: str = "") -> tuple[IntArray, float]:
     """(prog, pi) z pliku .npz; ścieżka względna jest liczona od data/tablice/."""
     path = TABLE_DIR / plik                         # ścieżka bezwzględna zostaje bez zmian
     if not path.exists():
@@ -22,27 +27,19 @@ def wczytaj_tablice(plik, podpowiedz=""):
     return _wczytaj_npz(str(path))
 
 
-def czy_stop_wektorowo(votes, prog):
-    """czy_stop dla wielu próbek naraz; votes ma kształt (n_próbek, l)."""
+def czy_stop_wektorowo(votes: IntArray, prog: IntArray) -> BoolArray:
     t = -np.sort(-votes, axis=1)                    # głosy malejąco w każdym wierszu
     return t[:, 0] >= prog[tuple(t[:, 1:].T)]
 
 
 class IBPruning(SequentialPruning):
-    """Drzewa są pytane po kolei, a głosowanie kończy się, gdy wynik jest pewny
-    z prawdopodobieństwem >= pi (według tablicy progów prog).
+    """Stop, gdy klasa prowadząca wygra pełne głosowanie z prawdopodobieństwem >= pi."""
 
-    Tablicę można podać na trzy sposoby:
-        IBPruning(pi=0.98)                    - plik T{T}_L{l}_pi98.npz dobierany
-                                                w fit() do rozmiaru lasu,
-        IBPruning(table="T501_L2_pi98.npz")   - konkretny plik,
-        IBPruning(prog, pi=0.98)              - gotowa tablica.
+    prog: IntArray
 
-    order="random" (z opcjonalnym seed) odpytuje drzewa w losowej kolejności,
-    osobnej dla każdej próbki; domyślnie "fixed" = kolejność rf.estimators_.
-    """
-
-    def __init__(self, prog=None, pi=None, table=None, name=None, order="fixed", seed=None):
+    def __init__(self, prog: ArrayLike | None = None, pi: float | None = None,
+                 table: str | Path | None = None, name: str | None = None,
+                 order: Order = "fixed", seed: int | None = None) -> None:
         if table is not None:
             prog, pi = wczytaj_tablice(table)
         if prog is None and pi is None:
@@ -55,11 +52,13 @@ class IBPruning(SequentialPruning):
                 name += "_rand"
         super().__init__(name, order=order, seed=seed)
 
-    def fit(self, rf, X_train=None, y_train=None):
+    def fit(self, rf: RandomForestClassifier, X_train: ArrayLike | None = None,
+            y_train: ArrayLike | None = None) -> Self:
         super().fit(rf)
         if self._prog is not None:
             self.prog = self._prog
-        else:
+        else:                                       # tablica dobierana do rozmiaru lasu
+            assert self.pi is not None
             self.prog = wczytaj_tablice(
                 plik_tablicy(self.T, self.l, self.pi),
                 f"; wygeneruj ją w src/: from generate_table_IB import generuj_tablice; "
@@ -70,8 +69,8 @@ class IBPruning(SequentialPruning):
                              f"a las ma T={self.T}, l={self.l}")
         return self
 
-    def _stop_batch(self, votes):
+    def _stop_batch(self, votes: IntArray) -> BoolArray:
         return czy_stop_wektorowo(votes, self.prog)
 
-    def _stop_one(self, votes):
+    def _stop_one(self, votes: IntArray) -> bool:
         return czy_stop(votes, self.prog)

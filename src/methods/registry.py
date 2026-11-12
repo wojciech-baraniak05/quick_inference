@@ -1,22 +1,18 @@
-"""Budowanie metod inferencji z opisów w config.toml.
+"""Budowanie metod inferencji z bloków [[methods]] w config.toml."""
+from collections.abc import Iterable, Mapping
+from typing import Any
 
-Każdy wpis [[methods]] to słownik z kluczem type (nazwa z METHOD_TYPES),
-opcjonalnym enabled (domyślnie true) i parametrami konstruktora danej klasy, np.
-
-    {"type": "ib_pruning", "pi": 0.98}
-    {"type": "hyper", "pi": 0.99}
-    {"type": "glee", "pi": 0.99}
-    {"type": "margin", "k": 0.0}
-"""
+from .base import InferenceMethod
 from .glee import Glee
 from .hyper import Hyper
 from .ib_pruning import IBPruning
 from .margin import MarginEarlyStop
 from .voting import FullVoting, SklearnRF
 
-# typy metod dostępne w config.toml; rf_sklearn włącza się osobno
-# przez benchmark.sklearn_soft_voting
-METHOD_TYPES = {
+MethodSpec = Mapping[str, Any]      # np. {"type": "ib_pruning", "pi": 0.98, "enabled": True}
+
+# rf_sklearn włącza się osobno, przez benchmark.sklearn_soft_voting
+METHOD_TYPES: dict[str, type[InferenceMethod]] = {
     FullVoting.name: FullVoting,
     "ib_pruning": IBPruning,
     "hyper": Hyper,
@@ -25,7 +21,8 @@ METHOD_TYPES = {
 }
 
 
-def build_method(spec):
+def build_method(spec: MethodSpec) -> InferenceMethod:
+    """Klucze poza type i enabled są argumentami konstruktora klasy METHOD_TYPES[type]."""
     spec = dict(spec)
     typ = spec.pop("type", None)
     spec.pop("enabled", None)
@@ -40,13 +37,10 @@ def build_method(spec):
         raise ValueError(f"złe parametry metody {typ!r}: {e}") from None
 
 
-def build_methods(specs, sklearn_soft_voting=True):
-    """Lista nowych (niedopasowanych) metod według configu.
-
-    sklearn_soft_voting=True  - na początku listy jest rf_sklearn (soft voting),
-    sklearn_soft_voting=False - tylko metody odpytujące pojedyncze drzewa.
-    """
-    methods = [SklearnRF()] if sklearn_soft_voting else []
+def build_methods(specs: Iterable[MethodSpec],
+                  sklearn_soft_voting: bool = True) -> list[InferenceMethod]:
+    """Nowe (niedopasowane) metody według configu; rf_sklearn idzie na początek listy."""
+    methods: list[InferenceMethod] = [SklearnRF()] if sklearn_soft_voting else []
     methods += [build_method(s) for s in specs if s.get("enabled", True)]
     names = [m.name for m in methods]
     duplikaty = sorted({n for n in names if names.count(n) > 1})

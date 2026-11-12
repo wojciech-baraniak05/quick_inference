@@ -2,7 +2,9 @@
 
 Ten dokument tłumaczy, **co robi projekt, jak przeprowadzać w nim badania, w jakim formacie są dane
 i wyniki oraz dlaczego kod jest napisany tak, a nie inaczej**. Krótszy opis instalacji i struktury
-katalogów jest w [README.md](README.md). Tutaj chodzi o zrozumienie całości.
+katalogów jest w [README.md](README.md). Tutaj chodzi o zrozumienie całości. Szczegóły samego
+kodu (konwencje tablic, wyprowadzenia, nieoczywiste miejsca) są w
+[implementacja.md](implementacja.md).
 
 ---
 
@@ -286,10 +288,11 @@ config.toml ──► config.py (stałe) ──► testing.py
                                                          ← np. dobór tablicy IB do T i l, a priori HYPER,
                                                            ranking i N* metody MARGIN
            benchmark.run(modes)                          ← batch i/lub online, pomiar czasu
-           suite.add(benchmark)
+           benchmark.release()                           ← zwalnia las i dane, wyniki zostają
+           suite.add(benchmark)                          ← od razu zapisuje NPZ przebiegu i CSV
    suite.summary()                                       ← tabele na ekran
    sprawdzenie: czy agree_full ≥ pi w każdym przebiegu
-   suite.save(data/<out_dir>)                            ← CSV + NPZ
+   suite.save()                                          ← CSV + NPZ (komplet, na koniec)
 ```
 
 Warstwy kodu:
@@ -437,6 +440,11 @@ aggregate_online.csv
 runs/<dataset>_seed<N>.npz   surowe predykcje jednego przebiegu
 ```
 
+Pliki powstają na bieżąco: po każdym przebiegu (zbiór, seed) zapisywany jest jego `.npz`,
+a tabele `.csv` są pisane od nowa ze wszystkich dotychczasowych przebiegów. Przerwany
+benchmark zostawia więc wyniki policzonych przebiegów (nie ma jeszcze wznawiania: ponowne
+uruchomienie liczy wszystko od początku).
+
 **Kolumny `results_*.csv`:**
 
 | Kolumna | Znaczenie |
@@ -522,19 +530,22 @@ Przykład z `binary_check` / `hard_nonlinear` (501 drzew, `max_depth=5`, `pi=0.9
 | binary_check | 0,043 | **23,8×** | 6,1× |
 | hard_nonlinear | 0,065–0,072 | **17,3×** | 2,4× |
 
-- **Online** (jedna próbka na raz): koszt to praktycznie `liczba wywołań tree.predict × stały
-  narzut sklearn` (walidacja wejścia itp., ok. 0,1 ms na wywołanie). Czas spada więc prawie
-  proporcjonalnie do `trees_frac`. To scenariusz, dla którego IB pruning jest najbardziej
-  naturalny (np. serwowanie modelu na żądanie).
+- **Online** (jedna próbka na raz): koszt to praktycznie `liczba odpytanych drzew × stały
+  koszt jednego wywołania`. Czas spada więc prawie proporcjonalnie do `trees_frac`. To
+  scenariusz, dla którego IB pruning jest najbardziej naturalny (np. serwowanie modelu na
+  żądanie).
 - **Batch** (cały zbiór naraz): każde drzewo i tak trzeba wywołać, dopóki *jakakolwiek*
   próbka jest aktywna. Zysk bierze się z tego, że kolejne drzewa dostają coraz mniejszy podzbiór.
   Narzut wywołań i rzadkie „trudne” próbki (`trees_max = 501`) ograniczają przyspieszenie.
 
-Z tego samego powodu `full_voting` jest ok. 2× wolniejsze od `rf_sklearn`, choć odpytuje
-tyle samo drzew. `rf.predict` sumuje `predict_proba` drzew w jednym przebiegu, a
-`tree.predict` to wewnętrznie `predict_proba` + `argmax` + zamiana na etykiety, do tego
-dochodzi nasze zliczanie głosów w NumPy. Dlatego przyspieszenie podajemy względem obu metod
-odniesienia.
+Liczby w tabeli pochodzą sprzed wprowadzenia `FastTree` (rozdz. 9). Każde wywołanie
+`tree.predict` płaciło wtedy ok. 0,07–0,1 ms za walidację wejścia w scikit-learn, przez co
+`full_voting` było w batchu ok. 2× wolniejsze od `rf_sklearn`, a w online wszystkie metody
+były o rząd wielkości wolniejsze niż teraz. Proporcje `speedup_vs_full` zostają podobne
+(obie strony płaciły ten sam narzut), ale `speedup_vs_rf` jest teraz wyraźnie wyższe:
+`rf.predict` waliduje wejście i przechodzi przez joblib przy każdym wywołaniu, więc dla
+jednej próbki kosztuje kilkanaście ms, wielokrotnie więcej niż własna pętla po drzewach.
+Dlatego przyspieszenie podajemy względem obu metod odniesienia.
 
 ### 7.4. Analiza w notebooku / interaktywnie
 
@@ -586,19 +597,31 @@ wcześniejszą wersję generatora (np. `CATEGORICAL_FEATURES`), której w
    klasę o niższym indeksie, a IB traktuje remis jako „nie wygrana”. Dla klasyfikacji binarnej
    używaj nieparzystego T (501, 51).
 
-6. **`requirements.txt` jest w UTF-16** (efekt `pip freeze > requirements.txt` w PowerShell).
-   `pip` sobie z tym radzi, ale `git diff` i niektóre edytory pokazują go jako plik binarny.
-   Przy kolejnej aktualizacji warto zapisać go w UTF-8:
-   `pip freeze | Out-File -Encoding utf8 requirements.txt`.
+6. **Dwa pliki z pakietami.** `requirements.txt` to tylko pakiety potrzebne do benchmarku
+   (numpy, pandas, pyarrow, scikit-learn, scipy), a `requirements-dev.txt` dokłada do nich
+   ipykernel, matplotlib i seaborn (notebooki i komórki `# %%`). Przypięte są tylko te
+   pakiety, zależności pośrednie dobiera `pip`. Wymagany jest Python 3.12 lub nowszy
+   (przypięte numpy i scipy nie wspierają 3.11). Nie nadpisuj tych plików przez
+   `pip freeze > requirements.txt`: w PowerShell daje to plik UTF-16 z całym środowiskiem.
 
 ---
 
 ## 9. Dlaczego kod wygląda tak, a nie inaczej
 
-**`tree.predict` zwraca indeks klasy, nie etykietę.** `RandomForestClassifier` wewnętrznie
-koduje `y` jako `0..l-1` i na tym uczy drzewa, więc `rf.estimators_[k].predict(X)` zwraca
-indeksy (jako float). Dlatego w metodach jest `.astype(int)` do indeksowania wektora głosów,
-a na końcu `self.classes[votes.argmax()]`, które zamienia indeks z powrotem na etykietę.
+**Drzewa głosują indeksem klasy, nie etykietą.** `RandomForestClassifier` wewnętrznie
+koduje `y` jako `0..l-1` i na tym uczy drzewa. Metody zliczają więc głosy po indeksach,
+a na końcu `self.classes[votes.argmax()]` zamienia indeks z powrotem na etykietę.
+
+**`FastTree` zamiast `tree.predict`.** `tree.predict` ze scikit-learn przy każdym wywołaniu
+waliduje wejście i zamienia je na `float32`. Dla jednej próbki to ok. 95% czasu wywołania
+(ok. 65 µs z 68), a metody z wczesnym stopem wołają drzewa pojedynczo, więc benchmark
+mierzył głównie ten narzut. Dlatego `fit()` klasy bazowej ustawia `self.trees` na listę
+`FastTree` ([src/methods/base.py](src/methods/base.py)): klasa każdego liścia jest liczona
+raz (`argmax` wartości liścia, tak jak w `tree.predict`), a `tree.predict(X)` to samo
+zejście po drzewie (`tree_.apply`) i odczyt z tablicy. `X` jest zamieniane na `float32`
+raz na wywołanie predykcji (`self._X32(X)`, które sprawdza też liczbę cech). Wyniki są
+identyczne z `tree.predict`. Lista `FastTree` jest wspólna dla wszystkich metod
+dopasowanych do tego samego lasu (`fast_trees(rf)`).
 
 **Własne głosowanie zamiast `rf.predict`.** `rf.predict` zawsze odpytuje wszystkie drzewa
 i uśrednia prawdopodobieństwa. Żeby przerwać w połowie, musimy sami iterować po
@@ -706,10 +729,11 @@ historycznych.
            super().__init__(name or f"first_{k}")
 
        def predict_batch(self, X):
+           X = self._X32(X)                           # float32 + kontrola kształtu, raz
            votes = np.zeros((len(X), self.l), dtype=int)
            rows = np.arange(len(X))
-           for tree in self.trees[: self.k]:
-               votes[rows, tree.predict(X).astype(int)] += 1   # indeks klasy, nie etykieta!
+           for tree in self.trees[: self.k]:          # self.trees to lista FastTree
+               votes[rows, tree.predict(X)] += 1      # indeks klasy, nie etykieta!
            return self.classes[votes.argmax(axis=1)], np.full(len(X), min(self.k, self.T))
 
        def predict_one(self, x):
@@ -719,7 +743,7 @@ historycznych.
 
    Kontrakt: `predict_batch(X) -> (y_pred, n_used)` i `predict_one(x) -> (y, n_used)`,
    gdzie `n_used` to liczba odpytanych drzew. `fit(rf)` z klasy bazowej ustawia
-   `self.trees`, `self.classes`, `self.T`, `self.l`. Nadpisz go (wołając `super().fit(rf)`),
+   `self.trees` (lista `FastTree`, rozdz. 9), `self.classes`, `self.T`, `self.l`. Nadpisz go (wołając `super().fit(rf)`),
    jeśli metoda potrzebuje przygotowania pod konkretny las. Sygnatura to
    `fit(rf, X_train=None, y_train=None)`: benchmark przekazuje dane uczące lasu.
    Metoda z wczesnym stopem może dziedziczyć po `SequentialPruning` i podać samo

@@ -1,0 +1,5 @@
+# Interactive work: the notebooks in src/analysis and the "# %%" cells of src/testing.py.
+-r requirements.txt
+ipykernel==7.4.0
+matplotlib==3.11.2
+seaborn==0.13.2

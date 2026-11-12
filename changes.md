@@ -1,3 +1,112 @@
+# Changes: type hints, short docstrings, `implementacja.md`
+
+No behaviour change: every method returns the same predictions and tree counts as before.
+
+- **Type hints** on every function and method in `src/` (except the `testing.py` script,
+  which has no functions). Shared aliases live at the top of
+  [src/methods/base.py](src/methods/base.py): `Features`, `IntArray`, `FloatArray`,
+  `BoolArray`, `Labels`, `Prediction`, `Order`. Option sets are `Literal` types, with the
+  runtime tuples derived from them (`RANKINGS` from `Ranking`, `SUPPORTED_MODES` from `Mode`).
+  Attributes that `fit` sets are declared on the classes.
+- **Docstrings** are one or two lines, or removed where the name and types already say it.
+  The long explanations moved to the new [implementacja.md](implementacja.md) (Polish, like
+  the docstrings it replaces), organised by module; module docstrings point to the chapter.
+- Small changes that came with the typing:
+  - `InferenceMethod.pi` is declared on the base class (`None` for methods without a
+    confidence level), so the benchmark no longer uses `getattr`.
+  - `SequentialPruning.fit` now takes `y_train` like every other `fit`.
+  - The scalar stop checks (`czy_stop`, `_stop_one`) return a Python `bool`.
+  - `FastTree` is exported from `methods`, `Mode` from `benchmarking`.
+- **Verification:** the 201 recorded arrays (predictions, tree counts, fitted tables) are
+  identical; `testing.py` runs end to end; `mypy --disallow-untyped-defs` reports no
+  errors. scikit-learn ships no type information, so its objects are checked as `Any`.
+
+---
+
+# Changes: fast tree evaluation, incremental results, requirements split
+
+Phase 1 of the production-readiness review. No method changes its predictions.
+
+## 1. Fast tree evaluator
+
+`tree.predict` from scikit-learn validates its input and converts it to `float32` on every
+call. For one sample that is about 65 µs of a 68 µs call, and every method here calls trees
+one at a time, so the benchmark mostly measured that overhead.
+
+[src/methods/base.py](src/methods/base.py) now has:
+
+| Piece | What it does |
+|---|---|
+| `FastTree(estimator)` | precomputes each leaf's class (`argmax` of the leaf values, as `tree.predict` does); `predict(X)` is `tree_.apply` plus a table lookup and returns class indices |
+| `fast_trees(rf)` | list of `FastTree` for a forest, cached per forest so all methods fitted to it share one list |
+| `to_float32(X)` | the one conversion per prediction call |
+| `InferenceMethod._X32(X)` | `to_float32` plus a shape check (`FastTree` does not validate) |
+
+`InferenceMethod.fit` sets `self.trees = fast_trees(rf)`, so `FixedVoting`,
+`SequentialPruning` (both orders), the margin method and the out-of-bag code in
+[src/methods/oob.py](src/methods/oob.py) all use it. `SequentialPruning.predict_batch` also
+keeps the features of the still-active samples and copies them only when a sample stops.
+
+`rf_sklearn` is unchanged: it is still scikit-learn's own `rf.predict`.
+
+Measured on 501 trees of depth 5 (single runs, same machine, before → after):
+
+| | batch | online, per sample |
+|---|---|---|
+| `full_voting`, 6,000 × 10 | 0.165 s → 0.133 s | 20.2 ms → 1.59 ms |
+| `IB_pi98`, 6,000 × 10 | 0.053 s → 0.034 s | 1.60 ms → 0.17 ms |
+| `IB_pi98_rand`, 6,000 × 10 | 5.34 s → 1.10 s | 1.47 ms → 0.20 ms |
+| `full_voting`, 150 × 2,000 | 0.250 s → 0.009 s | 34.6 ms → 1.57 ms |
+
+Consequences for reading results:
+
+- `speedup_vs_rf` is much higher than before, most of all online, where `rf.predict` still
+  pays its own per-call overhead (about 20 ms per sample).
+- Tree evaluation is now cheap enough that the stopping-rule bookkeeping shows. On very
+  small batches (`wide_p_gt_n`, 150 test rows) the early-stopping methods are slower in
+  batch mode than `full_voting` (`speedup_vs_full` about 0.4–0.6), although they query a
+  third to a half of the trees.
+- Results produced before this change are not comparable in the timing columns.
+
+## 2. Results are saved as they are produced; forests are released
+
+- `benchmark_suite(out_dir=...)`: `add()` writes the run's `.npz` and rewrites the `.csv`
+  tables (through a temporary file, so an interrupted write leaves no truncated table).
+  `save()` without an argument uses the same directory. There is no resume yet: a restarted
+  benchmark recomputes everything.
+- `benchmark.release()` drops the forest, the training data and `X_test`. `results()`,
+  `summary()` and `save()` keep working; `run()` raises. `testing.py` calls it before
+  `suite.add(b)`, so the suite no longer holds every forest and dataset until the end.
+- To make that possible `benchmark` keeps its own `names`, `T`, `classes` and `pi_levels`
+  (name → `pi` of the methods that have one) instead of reading them from `models`.
+- `benchmark.results(mode)` is computed once per mode and cached.
+
+## 3. Repository hygiene
+
+- `src/__pycache__/decision_tree.cpython-315.pyc` removed from git (its source file no
+  longer exists; `__pycache__/` was already in `.gitignore`).
+- `requirements.txt` now lists only the five runtime packages (UTF-8; it used to be a UTF-16
+  `pip freeze` of 50 packages). `requirements-dev.txt` adds ipykernel, matplotlib and
+  seaborn for the notebooks and `# %%` cells. Transitive dependencies are no longer pinned.
+  `setup_windows.bat` installs `requirements-dev.txt`.
+- Python requirement corrected from 3.11 to 3.12 in the README and `setup_windows.bat`:
+  the pinned numpy 2.5.4 and scipy 1.18.1 require 3.12.
+
+## 4. Verification
+
+- Before the change, predictions and tree counts of every method (batch and 100 online
+  samples) were recorded on four datasets (2, 3 and 4 classes, 10 to 2,000 features),
+  including both random-order variants, plus the fitted HYPER tables and margin rankings.
+  After the change all 201 arrays are identical.
+- `testing.py` run end to end on four binary datasets × 3 seeds with the default config.
+- Checked directly: files exist after each `add()`, `results()` is unchanged by
+  `release()`, the forest is garbage-collected after `release()`, a wrong feature count
+  raises `ValueError`.
+
+There is still no automated test suite; these checks were run by hand.
+
+---
+
 # Changes: margin-based early stopping (Barbareschi, Emmanuele)
 
 Adds the method from Barbareschi, Emmanuele, *A Margin Based Early-Stopping Approach for

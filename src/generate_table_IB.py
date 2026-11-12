@@ -1,41 +1,34 @@
-"""
-Generowanie tablicy stopu dla statystycznego instance-based pruningu
+"""Tablice progów stopu dla statystycznego instance-based pruningu
 (Hernández-Lobato, Martínez-Muñoz, Suárez, IEEE TPAMI 31(2), 2009).
-
-Tablica zależy tylko od T (liczba klasyfikatorów), l (liczba klas)
-i pi (poziom ufności), więc wystarczy policzyć ją raz i zapisać do pliku.
-"""
+Model i format tablicy: implementacja.md, rozdz. 4."""
 import sys
 import time
+from collections.abc import Iterable
 from functools import lru_cache
 from itertools import combinations_with_replacement
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
 TABLE_DIR = Path(__file__).resolve().parents[1] / "data" / "tablice"
 
+Votes = tuple[int, ...]         # liczba głosów na każdą klasę
 
-def pi_tag(pi):
-    """Poziom ufności w procentach jako tekst do nazw (0.98 -> '98', 0.995 -> '99.5')."""
+
+def pi_tag(pi: float) -> str:
+    """Poziom ufności w procentach do nazw plików i metod: 0.98 -> '98', 0.995 -> '99.5'."""
     return f"{round(pi * 100, 6):g}"
 
 
-def plik_tablicy(T, l, pi):
-    """Ścieżka pliku z tablicą progów dla T klasyfikatorów, l klas i poziomu pi."""
+def plik_tablicy(T: int, l: int, pi: float) -> Path:
     return TABLE_DIR / f"T{T}_L{l}_pi{pi_tag(pi)}.npz"
 
 
 @lru_cache(maxsize=None)
-def wygrana(t, T):
-    """Prawdopodobieństwo, że klasa 0 ściśle wygra po zebraniu T głosów,
-    jeśli dotychczasowe głosy to t (krotka liczb głosów na każdą klasę).
-
-    Model urny Polyi: następny głos trafia do klasy i z prawdopodobieństwem
-    (t[i] + 1) / (sum(t) + l). Dzięki temu wynik dla stanu t składa się
-    z wyników dla stanów o jeden głos dalej, a lru_cache sprawia,
-    że każdy stan liczony jest tylko raz.
-    """
+def wygrana(t: Votes, T: int) -> float:
+    """P(klasa 0 ściśle wygra po T głosach | dotychczasowe głosy t) w modelu urny Polyi."""
     if sum(t) == T:
         return float(t[0] > max(t[1:]))
 
@@ -47,33 +40,16 @@ def wygrana(t, T):
     return wynik
 
 
-def p_same(t, T):
-    """Prawdopodobieństwo, że klasa prowadząca po zebraniu głosów t
-    wygra też po zebraniu wszystkich T głosów (wzór (8) z artykułu).
-
-    Sortujemy t malejąco, żeby klasa prowadząca była na pozycji 0
-    (wynik nie zależy od kolejności klas, a cache jest lepiej wykorzystany).
-    """
-    # głębokość rekurencji ~T; bez tego dla dużego T zostanie przekroczony limit
+def p_same(t: Iterable[int], T: int) -> float:
+    """P(klasa prowadząca w t wygra też po wszystkich T głosach), wzór (8) z artykułu."""
+    # głębokość rekurencji to ok. T, domyślny limit nie wystarcza dla dużych lasów
     sys.setrecursionlimit(max(sys.getrecursionlimit(), 3 * T + 100))
+    # klasa prowadząca na pozycji 0; sortowanie zmniejsza też liczbę stanów w cache
     return wygrana(tuple(sorted(map(int, t), reverse=True)), T)
 
 
-def generuj_tablice(T, l, pi):
-    """Generuje tablicę progów stopu dla zespołu T klasyfikatorów i l klas
-    przy poziomie ufności pi i zapisuje ją do data/tablice/T{T}_L{l}_pi{pi*100}.npz.
-
-    Przy ustalonych głosach pozostałych klas P(t, T) rośnie wraz z liczbą
-    głosów klasy prowadzącej, więc zamiast pełnej tablicy (T+1)^l wartości
-    True/False wystarczy zapamiętać próg:
-
-        prog[t_2, ..., t_l] = najmniejsze t_1, dla którego P(t, T) >= pi
-                              (T + 1, jeśli przy tych t_2..t_l nie da się przerwać)
-
-    gdzie t_1 >= t_2 >= ... >= t_l to głosy posortowane malejąco.
-    Wypełniane są tylko komórki o indeksach posortowanych malejąco,
-    dlatego przed sprawdzeniem trzeba posortować głosy (patrz czy_stop).
-    """
+def generuj_tablice(T: int, l: int, pi: float) -> Path:
+    """Liczy tablicę progów i zapisuje ją do data/tablice/T{T}_L{l}_pi{pi*100}.npz."""
     start = time.perf_counter()
     prog = np.full((T + 1,) * (l - 1), T + 1, dtype=np.min_scalar_type(T + 1))
     for reszta in combinations_with_replacement(range(T + 1), l - 1):  # rosnąco
@@ -83,7 +59,7 @@ def generuj_tablice(T, l, pi):
                 prog[reszta] = t1
                 break
     wygrana.cache_clear()                     # zwolnienie pamięci po obliczeniach
-    czas = time.perf_counter() - start        # czas generowania w sekundach
+    czas = time.perf_counter() - start
 
     TABLE_DIR.mkdir(parents=True, exist_ok=True)
     plik = plik_tablicy(T, l, pi)
@@ -92,11 +68,10 @@ def generuj_tablice(T, l, pi):
     return plik
 
 
-def czy_stop(glosy, prog):
-    """True, jeśli przy aktualnych głosach (liczba głosów na każdą klasę,
-    w dowolnej kolejności) można przerwać odpytywanie klasyfikatorów."""
+def czy_stop(glosy: Iterable[int], prog: NDArray[np.integer[Any]]) -> bool:
+    """Czy przy tych głosach (klasy w dowolnej kolejności) można przerwać głosowanie."""
     t = sorted(map(int, glosy), reverse=True)
-    return t[0] >= prog[tuple(t[1:])]
+    return bool(t[0] >= prog[tuple(t[1:])])
 
 
 if __name__ == "__main__":

@@ -1,58 +1,59 @@
-"""Zbiór metod inferencji dopasowanych do jednego lasu."""
+"""Zbiór metod inferencji dopasowanych do jednego lasu (opis: implementacja.md, rozdz. 9)."""
 import time
+from collections.abc import Iterable
+from typing import Any, Self
 
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
+from sklearn.ensemble import RandomForestClassifier
 
-from methods import FullVoting, SklearnRF
+from methods import FullVoting, InferenceMethod, SklearnRF
+from methods.base import FloatArray, IntArray, Labels, Prediction
 
-from .modes import check_modes
+from .modes import Mode, check_modes
+
+RunResult = tuple[Labels, IntArray, FloatArray]     # (Y_pred, N_used, times), wiersz = metoda
 
 
 class methods_rf:
-    """Zbiór metod inferencji dla jednego wytrenowanego lasu losowego.
+    """Metody inferencji dla jednego wytrenowanego lasu; run() zbiera ich wyniki w macierze."""
 
-    Po run(X, mode) wyniki są w macierzach:
-        Y_pred[mode]  (n_metod, n_próbek)  predykcje
-        N_used[mode]  (n_metod, n_próbek)  liczba odpytanych drzew
-        times[mode]   (n_metod,)           czas predykcji w s (mediana z n_repeats)
-    Wiersz i odpowiada metodzie names[i].
-
-    X_train, y_train (dane uczące lasu) są przekazywane do fit() każdej metody;
-    potrzebują ich metody szacujące coś z danych (Hyper: X_train, MarginEarlyStop: oba).
-    """
-
-    def __init__(self, rf, methods=None, X_train=None, y_train=None):
+    def __init__(self, rf: RandomForestClassifier,
+                 methods: Iterable[InferenceMethod] | None = None,
+                 X_train: ArrayLike | None = None, y_train: ArrayLike | None = None) -> None:
         self.rf = rf
-        self.X_train, self.y_train = X_train, y_train
-        self.classes = rf.classes_
+        self.X_train, self.y_train = X_train, y_train       # przekazywane do fit() każdej metody
+        self.classes: Labels = rf.classes_
         self.T = len(rf.estimators_)
         self.l = len(rf.classes_)
-        self.methods = []
+        self.methods: list[InferenceMethod] = []
         for m in (methods if methods is not None else [SklearnRF(), FullVoting()]):
             self.add_method(m)
-        self.Y_pred, self.N_used, self.times = {}, {}, {}
+        self.Y_pred: dict[Mode, Labels] = {}
+        self.N_used: dict[Mode, IntArray] = {}
+        self.times: dict[Mode, FloatArray] = {}
 
     @property
-    def names(self):
+    def names(self) -> list[str]:
         return [m.name for m in self.methods]
 
-    def add_method(self, method):
+    def add_method(self, method: InferenceMethod) -> Self:
         if method.name in self.names:
             raise ValueError(f"metoda o nazwie '{method.name}' już istnieje")
         self.methods.append(method.fit(self.rf, self.X_train, self.y_train))
         return self
 
-    def index(self, name):
+    def index(self, name: str) -> int:
         return self.names.index(name)
 
-    def _run_method(self, method, X, mode):
+    def _run_method(self, method: InferenceMethod, X: NDArray[Any], mode: Mode) -> Prediction:
         if mode == "batch":
             return method.predict_batch(X)
         wyniki = [method.predict_one(x[None, :]) for x in X]
         y, n = zip(*wyniki)
         return np.array(y), np.array(n)
 
-    def run(self, X, mode="batch", n_repeats=1):
+    def run(self, X: NDArray[Any], mode: Mode = "batch", n_repeats: int = 1) -> RunResult:
         check_modes([mode])
         Y = np.empty((len(self.methods), len(X)), dtype=self.classes.dtype)
         N = np.empty((len(self.methods), len(X)), dtype=int)
