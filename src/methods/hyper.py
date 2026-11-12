@@ -22,39 +22,10 @@ from scipy.special import gammaln
 from generate_table_IB import pi_tag
 
 from .base import SequentialPruning
+from .oob import glosy_oob
 
 # największa dopuszczalna liczba komórek (T+1)^(l-1) rozkładu a priori
 MAX_CELLS = 2_000_000
-
-
-def glosy_oob(rf, X_train, n_prior=None, seed=0):
-    """Głosy out-of-bag: votes[n, i] = ile drzew, które NIE widziały próbki n
-    przy uczeniu, głosuje na klasę i. X_train to dane, na których uczono rf.
-
-    n_prior ogranicza liczbę (losowo wybranych) próbek uczących; None = wszystkie.
-    """
-    X_train = np.asarray(X_train)
-    n = len(X_train)
-    if not rf.bootstrap:
-        raise ValueError("głosy out-of-bag wymagają lasu z bootstrap=True")
-    if getattr(rf, "_n_samples", n) != n:
-        raise ValueError(f"X_train ma {n} wierszy, a las uczono na {rf._n_samples}")
-    if n_prior is None or n_prior >= n:
-        wiersze = np.arange(n)
-    else:
-        wiersze = np.sort(np.random.default_rng(seed).choice(n, n_prior, replace=False))
-    X = X_train[wiersze]
-
-    # indeksy bootstrapu każdego drzewa; generator sklearn nie trzyma ich naraz w pamięci
-    if hasattr(rf, "_get_estimators_indices"):
-        indeksy = rf._get_estimators_indices()
-    else:
-        indeksy = rf.estimators_samples_
-    votes = np.zeros((len(wiersze), len(rf.classes_)), dtype=int)
-    for tree, w_probie in zip(rf.estimators_, indeksy):
-        oob = np.flatnonzero(np.bincount(w_probie, minlength=n)[wiersze] == 0)
-        votes[oob, tree.predict(X[oob]).astype(int)] += 1
-    return votes
 
 
 def prior_z_glosow(votes, T, smooth=5):
@@ -81,7 +52,9 @@ def prior_z_glosow(votes, T, smooth=5):
     prior = np.zeros((T + 1,) * (l - 1))
     np.add.at(prior, tuple(sklad[:, :-1].T), 1)
     if smooth and smooth > 1:
-        prior = uniform_filter(prior, size=smooth, mode="constant")
+        # filtr liczy sumy kroczące i potrafi zostawić wartości rzędu -1e-20 zamiast 0;
+        # ujemne "prawdopodobieństwo" dawało potem nan w całej tablicy progów
+        prior = np.clip(uniform_filter(prior, size=smooth, mode="constant"), 0, None)
     prior[np.indices(prior.shape).sum(axis=0) > T] = 0          # składy niemożliwe
     return prior / prior.sum()
 
@@ -178,7 +151,7 @@ class Hyper(SequentialPruning):
         self.pi, self.n_prior, self.smooth = pi, n_prior, smooth
         super().__init__(name or f"HYPER_pi{pi_tag(pi)}")
 
-    def fit(self, rf, X_train=None):
+    def fit(self, rf, X_train=None, y_train=None):
         super().fit(rf)
         if X_train is None:
             raise ValueError(f"{self.name}: fit(rf, X_train) wymaga danych uczących lasu "

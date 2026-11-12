@@ -34,7 +34,7 @@ max_depth = 5                       # usuń klucz, żeby drzewa nie miały limit
 
 # ---------------------------------------------------------------------------
 # metody badane w benchmarku: jeden blok [[methods]] na metodę.
-#   type    - "full_voting" | "ib_pruning" | "hyper"
+#   type    - "full_voting" | "ib_pruning" | "hyper" | "glee" | "margin"
 #   name    - opcjonalna nazwa w wynikach
 #   enabled - false wyłącza metodę bez usuwania bloku
 # ---------------------------------------------------------------------------
@@ -63,3 +63,16 @@ type = "hyper"                      # IB pruning z a priori z głosów out-of-ba
 pi = 0.98                           # tablica liczona w fit() z danych uczących, bez pliku
 # n_prior = 20000                   # ile próbek uczących do głosów OOB (domyślnie 20000)
 # smooth = 5                        # okno wygładzania a priori (0 = bez wygładzania)
+
+[[methods]]
+type = "glee"                       # gaussowski przedział ufności (GLEE z COMET, Basilico i in., 2011)
+pi = 0.98                           # alfa = 1 - pi; tablica liczona w fit(), bez pliku i bez danych
+# min_votes = 15                    # min. liczba głosów przed stopem (domyślnie wg artykułu: 15/30/45)
+# fpc = true                        # poprawka na populację skończoną
+# one_sided = true                  # przedział jednostronny (false = dwustronny, ostrożniejszy)
+
+[[methods]]
+type = "margin"                     # stała liczba drzew z marginesu lasu (Barbareschi, Emmanuele, 2025)
+k = 0.0                             # N* = n_trees * (mu + k * sigma); k > 0: więcej drzew, k < 0: mniej
+# ranking = "mean_d_m"              # kolejność drzew: "mean_d_m" (artykuł) | "accuracy" | "none"
+# n_calib = 20000                   # ile próbek uczących do kalibracji out-of-bag (domyślnie 20000)

@@ -10,7 +10,8 @@ class InferenceMethod:
     n_used = liczba drzew odpytanych dla danej próbki.
 
     Nową metodę dodaje się jako podklasę z predict_batch i predict_one
-    (metodę z wczesnym stopem: jako podklasę SequentialPruning z samym _stop_batch).
+    (metodę z wczesnym stopem: jako podklasę SequentialPruning z samym _stop_batch,
+    metodę głosującą stałym podzbiorem drzew: jako podklasę FixedVoting z samym voters).
     Żeby dało się ją wybrać w config.toml, trzeba ją jeszcze dopisać
     do METHOD_TYPES w methods/registry.py.
     """
@@ -21,9 +22,10 @@ class InferenceMethod:
         if name is not None:
             self.name = name
 
-    def fit(self, rf, X_train=None):
-        """Wiąże metodę z lasem rf. X_train (dane, na których uczono las) jest
-        potrzebne tylko metodom, które coś z nich szacują (np. Hyper)."""
+    def fit(self, rf, X_train=None, y_train=None):
+        """Wiąże metodę z lasem rf. X_train, y_train (dane, na których uczono las) są
+        potrzebne tylko metodom, które coś z nich szacują (Hyper: X_train,
+        MarginEarlyStop: X_train i y_train)."""
         self.rf = rf
         self.trees = rf.estimators_
         self.classes = rf.classes_
@@ -39,6 +41,32 @@ class InferenceMethod:
 
     def __repr__(self):
         return f"{type(self).__name__}(name={self.name!r})"
+
+
+class FixedVoting(InferenceMethod):
+    """Hard voting stałej listy drzew self.voters, tej samej dla każdej próbki.
+
+    Po fit() głosują wszystkie drzewa lasu (FullVoting); podklasa może w swoim fit()
+    wybrać podzbiór i kolejność (np. MarginEarlyStop: N* pierwszych drzew rankingu).
+    """
+
+    def fit(self, rf, X_train=None, y_train=None):
+        super().fit(rf)
+        self.voters = self.trees
+        return self
+
+    def predict_batch(self, X):
+        votes = np.zeros((len(X), self.l), dtype=int)
+        wiersze = np.arange(len(X))
+        for tree in self.voters:
+            votes[wiersze, tree.predict(X).astype(int)] += 1
+        return self.classes[votes.argmax(axis=1)], np.full(len(X), len(self.voters))
+
+    def predict_one(self, x):
+        votes = np.zeros(self.l, dtype=int)
+        for tree in self.voters:
+            votes[int(tree.predict(x)[0])] += 1
+        return self.classes[votes.argmax()], len(self.voters)
 
 
 class SequentialPruning(InferenceMethod):

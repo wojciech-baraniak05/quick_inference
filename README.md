@@ -12,6 +12,17 @@ majority voting in classification ensembles*, NIPS 2016), uses the same stopping
 replaces IB pruning's uniform prior over vote outcomes with a prior estimated from the
 forest's out-of-bag votes (see [HYPER](#hyper-data-dependent-prior)).
 
+A third one, **GLEE** (Gaussian Lazy Ensemble Evaluation, from Basilico, Munson, Kolda,
+Dixon, Kegelmeyer, *COMET: A Recipe for Learning and Using Large Ensembles on Massive Data*,
+ICDM 2011), stops when a Gaussian confidence interval around the leading class's vote share
+excludes 0.5 (see [GLEE](#glee-gaussian-confidence-interval)).
+
+A fourth one, **margin-based early stopping** (Barbareschi, Emmanuele, *A Margin Based
+Early-Stopping Approach for Random Forest Classifiers*, DSN-W 2025), ranks the trees offline
+and then lets only the first `N*` of them vote, with `N*` derived from the forest's margin
+(see [Margin-based early stopping](#margin-based-early-stopping)). Unlike the other three,
+it queries the same number of trees for every sample.
+
 ## How to run?
 
 Requires Python 3.11 or newer. `requirements.txt` is pinned against Python 3.15.
@@ -70,7 +81,7 @@ from config import SEED, MODES, METHODS
 | top level | `seed`: random seed for synthetic dataset generation |
 | `[benchmark]` | `datasets` (folders or files under `data/`), `out_dir`, `modes` (`batch`, `online`), `seeds`, `test_size`, `n_online`, `n_repeats`, `sklearn_soft_voting` |
 | `[forest]` | `n_trees`, `max_depth` (omit for unlimited depth) |
-| `[[methods]]` | one block per benchmarked method: `type` (`full_voting`, `ib_pruning` or `hyper`), optional `name` and `enabled`, plus the method's parameters |
+| `[[methods]]` | one block per benchmarked method: `type` (`full_voting`, `ib_pruning`, `hyper`, `glee` or `margin`), optional `name` and `enabled`, plus the method's parameters |
 
 `sklearn_soft_voting = true` adds `rf_sklearn` to the benchmark. That is scikit-learn's
 `rf.predict`, which averages tree probabilities (soft voting), and the results get the
@@ -89,6 +100,16 @@ query different trees cannot share one `predict` call.
 A `hyper` method takes `pi` and optionally `n_prior` (number of training samples used for
 the out-of-bag votes, default 20000) and `smooth` (prior smoothing window, default 5).
 It needs no table file.
+
+A `glee` method takes `pi` (the paper's `α` is `1 - pi`) and optionally `min_votes`
+(votes required before stopping; default 15, 30 or 45 depending on `α`, as in the paper),
+`fpc` (finite population correction, default `true`) and `one_sided` (default `true`).
+It needs no table file and no training data, and works for any number of classes.
+
+A `margin` method takes `k` (default 0; larger = more trees) and optionally `ranking`
+(`mean_d_m`, `accuracy` or `none`; default `mean_d_m`) and `n_calib` (number of training
+samples used for calibration, default 20000). It needs no table file and works for any
+number of classes. It has no `pi`: its results are named `MARGIN_k0`, `MARGIN_k-0.5` etc.
 
 To add a setting, add the key to `config.toml` and expose it in `src/config.py`.
 
@@ -151,6 +172,63 @@ Monte Carlo estimate of the mean number of queried trees from the prior alone.
 Because the prior is fitted to the data, HYPER's `agree_full` lands close to `pi` rather
 than well above it, and individual runs can fall slightly below `pi`.
 
+## GLEE: Gaussian confidence interval
+
+The lazy-evaluation rule of the COMET paper (sec. II-C). Each tree's vote is a Bernoulli
+variable, so after `n` votes the leader's vote share `p̂` is roughly Gaussian. Voting stops
+when the lower bound of a one-sided `1 - α` confidence interval is above 0.5:
+
+```
+p̂ - ρ·δ > 0.5      δ = z_α · sqrt(p̂(1 - p̂) / n)
+ρ = sqrt((m - n) / (m - 1))  if n > 0.05·m,  else 1      (finite population correction)
+```
+
+with `m` the number of trees and `α = 1 - pi`. No stop is allowed before `min_votes` votes,
+because the Gaussian approximation is poor for small `n`. With more than two classes the
+leader is treated as class 1 and the runner-up as class 0 (`p̂ = t₁ / (t₁ + t₂)`,
+`n = t₁ + t₂`), as the paper suggests.
+
+`Glee.fit` turns the rule into a threshold table `prog[t₂]` = fewest leader votes that stop
+(a few milliseconds for 501 trees), so prediction is the same loop and lookup as IB pruning.
+The table depends only on `T` and the parameters: no file, no training data, no limit on the
+number of classes. `fpc = false` and `one_sided = false` give the paper's G1, G2 and G2-FPC
+variants; the defaults are G1-FPC, which the paper calls GLEE.
+
+Only this rule is taken from COMET. Its training side (MapReduce, IVoting forests) builds the
+ensemble and is outside the scope of inference on a fitted forest.
+
+## Margin-based early stopping
+
+The method of Barbareschi and Emmanuele (DSN-W 2025). The margin of a sample is
+`M = (v_c - v_c*) / N`: votes for the true class minus votes for the best other class, over
+the number of trees. It is positive for correctly classified samples.
+
+Offline, `fit(rf, X_train, y_train)`:
+
+1. ranks the trees. The default `mean_d_m` is the MeanD-M criterion the paper uses: a tree's
+   score is the mean drop of the margin when that tree is removed from the forest.
+   `accuracy` ranks by single-tree accuracy and `none` keeps the forest's order;
+2. computes the mean `mu` and standard deviation `sigma` of the margin over the correctly
+   classified calibration samples and sets
+
+   ```
+   N* = N · (mu + k · sigma)        rounded, kept within [1, N]
+   ```
+
+At prediction time every sample is voted on by the first `N*` trees of the ranking, so
+`trees_mean = trees_median = trees_max = N*`. `set_k(k)` changes `k` after `fit` without
+recalibrating (the paper's on-board tuning of `k`; the tuning policy itself is not specified
+in the paper and is not implemented).
+
+The paper calibrates on half of the test set. Here the calibration set is the training data
+with out-of-bag votes (each sample is voted on only by trees that did not see it), so the
+whole test set is left for measurement, as for the other methods. This needs a forest
+trained with `bootstrap=True`.
+
+There is no confidence level: `k` trades trees for agreement directly, and `agree_full` is
+not checked against a `pi`. Because `N*` grows with the mean margin, the method keeps *more*
+trees on easy datasets (large margins) than on hard ones.
+
 ## Running the benchmark
 
 [`src/testing.py`](src/testing.py) reads everything from `config.toml`.
@@ -161,7 +239,7 @@ selected `modes`:
 - **batch**: the whole test set at once;
 - **online**: the first `n_online` samples, predicted one by one.
 
-The default config compares `rf_sklearn`, `full_voting`, `IB_pi98` and `HYPER_pi98` on the binary synthetic
+The default config compares `rf_sklearn`, `full_voting`, `IB_pi98`, `HYPER_pi98`, `GLEE_pi98` and `MARGIN_k0` on the binary synthetic
 datasets (501 trees, depth 5, seeds 1–3).
 
 Run it from `src/`:
@@ -188,7 +266,9 @@ Create a module in [`src/methods/`](src/methods/) with a subclass of `InferenceM
 - `predict_one(x) -> (y, n_used)`
 
 An early-stopping method only needs a stopping rule: subclass `SequentialPruning` and
-implement `_stop_batch(votes) -> bool mask` (the query loops are shared by IB pruning and HYPER).
+implement `_stop_batch(votes) -> bool mask` (the query loops are shared by IB pruning, HYPER and GLEE).
+A method that votes with a fixed list of trees subclasses `FixedVoting` and sets `self.voters`
+in `fit` (the voting loops are shared by `full_voting` and the margin method).
 
 Here `n_used` is the number of trees queried. To make the method selectable in `config.toml`,
 add it to `METHOD_TYPES` in [`src/methods/registry.py`](src/methods/registry.py):
@@ -208,7 +288,8 @@ Without the config, you can also use the method directly:
 ```python
 from benchmarking import methods_rf
 m = methods_rf(rf)              # includes rf_sklearn and full_voting
-                                # pass X_train=... for methods that need training data (hyper)
+                                # pass X_train=..., y_train=... for methods that need training
+                                # data (hyper: X_train, margin: both)
 m.add_method(MyMethod())
 ```
 
@@ -226,10 +307,14 @@ data/
 src/
   config.py                  reads config.toml
   methods/                   inference methods, one module each
-    base.py                  InferenceMethod interface, SequentialPruning (early-stopping loop)
+    base.py                  InferenceMethod interface, FixedVoting (fixed tree list),
+                             SequentialPruning (per-sample early-stopping loop)
     voting.py                rf_sklearn (soft voting), full_voting (hard voting)
     ib_pruning.py            IB pruning (uniform prior, table from file)
     hyper.py                 HYPER (out-of-bag prior, table computed in fit)
+    glee.py                  GLEE (Gaussian confidence interval, from the COMET paper)
+    margin.py                margin-based early stopping (tree ranking + N* from the margin)
+    oob.py                   out-of-bag predictions on the training data (used by hyper, margin)
     registry.py              builds methods from [[methods]] in config.toml
   benchmarking/              benchmark machinery, independent of config.toml
     modes.py                 batch / online scenarios

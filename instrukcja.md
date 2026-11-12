@@ -32,6 +32,8 @@ Każdą metodę porównujemy z dwiema metodami odniesienia:
 | `full_voting` | **hard voting**: każde drzewo oddaje jeden głos, wygrywa większość | to jest dokładnie to, co IB pruning przybliża; punkt odniesienia dla zgodności |
 | `IB_pi98` itd. | IB pruning z poziomem `pi` | badana metoda |
 | `HYPER_pi98` itd. | IB pruning z a priori rozkładu głosów szacowanym z danych (rozdz. 2a) | badana metoda |
+| `GLEE_pi98` itd. | wczesny stop z gaussowskim przedziałem ufności, z artykułu COMET (rozdz. 2b) | badana metoda |
+| `MARGIN_k0` itd. | ranking drzew i stała liczba drzew wyznaczona z marginesu lasu (rozdz. 2c) | badana metoda |
 
 > **Ważne:** IB pruning przybliża *hard voting*, a nie `rf.predict`. Soft i hard voting
 > zwykle dają ten sam wynik, ale nie zawsze (`agree_rf` między nimi to ok. 0,99). Dlatego to
@@ -144,6 +146,112 @@ domyślnie 20000) i `smooth` (okno wygładzania, 0 = bez).
 
 ---
 
+## 2b. GLEE: gaussowski przedział ufności
+
+Reguła stopu z artykułu Basilico, Munson, Kolda, Dixon, Kegelmeyer, *COMET: A Recipe for
+Learning and Using Large Ensembles on Massive Data* (ICDM 2011, rozdz. II-C), kod w
+[src/methods/glee.py](src/methods/glee.py). GLEE to skrót od *Gaussian Lazy Ensemble Evaluation*.
+
+Głos drzewa to zmienna Bernoulliego, więc po `n` głosach odsetek głosów klasy prowadzącej `p̂`
+ma w przybliżeniu rozkład normalny. Zamiast liczyć prawdopodobieństwo a posteriori (IB, HYPER),
+GLEE buduje jednostronny przedział ufności `1 − α` dla prawdziwego odsetka `p` i przerywa
+głosowanie, gdy jego dolna granica leży powyżej 0,5:
+
+```
+p̂ − ρ·δ > 0,5
+δ = z_α · sqrt(p̂ (1 − p̂) / n)
+ρ = sqrt((m − n) / (m − 1))   jeśli n > 0,05·m,   inaczej 1
+```
+
+- `m` to liczba drzew, `α = 1 − pi` to dopuszczalna częstość niezgodności z pełnym głosowaniem,
+- `ρ` to **poprawka na populację skończoną**: drzewa losujemy bez zwracania, więc niepewność
+  maleje, gdy zostaje ich mało (przy `n = m` przedział ma szerokość 0),
+- przybliżenie normalne jest słabe dla małych `n`, więc stop jest dozwolony dopiero po
+  `min_votes` głosach; artykuł podaje 15, 30 i 45 dla `α` = 10⁻², 10⁻³ i 10⁻⁴ i takie są
+  wartości domyślne (dla `pi = 0.98` jest to 15),
+- dla wielu klas klasa prowadząca jest traktowana jak klasa 1, a druga w kolejności jak
+  klasa 0: `p̂ = t_1 / (t_1 + t_2)`, `n = t_1 + t_2`.
+
+Tak jak w IB, regułę zamieniamy na **tablicę progów** (`tablica_glee`), tutaj jednowymiarową:
+`prog[t_2]` = najmniejsze `t_1`, przy którym wolno przerwać. Dla `T = 501`, `pi = 0.98`:
+`prog[:6] = [15, 14, 13, 12, 12, 13]`. Początkowe wartości wynikają z `min_votes = 15`
+(15 głosów jednogłośnych albo 14 do 1 itd.), dalej decyduje już przedział ufności.
+
+Różnice względem IB i HYPER w praktyce:
+
+- tablica zależy tylko od `T` i parametrów, liczy się w `fit()` w kilka milisekund,
+  **nie potrzeba pliku ani danych uczących**,
+- działa dla **dowolnej liczby klas** (tablica nie rośnie z `l`), więc można ją badać także
+  na zbiorach, na których IB i HYPER są pomijane,
+- przez `min_votes` nigdy nie przerywa przed 15. drzewem, więc na łatwych zbiorach odpytuje
+  więcej drzew niż IB (które potrafi przerwać po 5 jednogłośnych głosach), a `agree_full`
+  wypada wyraźnie powyżej `pi`,
+- `fpc = false` i `one_sided = false` dają warianty G1, G2 i G2-FPC z rys. 1 artykułu;
+  domyślne ustawienia to G1-FPC, czyli reguła, którą artykuł nazywa GLEE.
+
+Z COMET wzięta jest tylko ta reguła. Część o uczeniu (MapReduce, lasy IVoting) dotyczy budowy
+zespołu, a projekt bada inferencję na gotowym lesie ze scikit-learn.
+
+Parametry w configu: `pi`, `min_votes`, `fpc`, `one_sided`.
+
+---
+
+## 2c. MARGIN: ranking drzew i liczba drzew z marginesu
+
+Metoda z artykułu Barbareschi, Emmanuele, *A Margin Based Early-Stopping Approach for Random
+Forest Classifiers* (DSN-W 2025), kod w [src/methods/margin.py](src/methods/margin.py).
+
+**Margines** próbki mówi, jak pewne jest głosowanie:
+
+```
+M = (v_c − v_c*) / N
+```
+
+`v_c` to głosy klasy prawdziwej, `v_c*` głosy najlepszej innej klasy, `N` liczba drzew.
+`M > 0` oznacza poprawną klasyfikację, `M` bliskie 1 to prawie jednogłośny las.
+
+**Faza offline** (`fit(rf, X_train, y_train)`), na zbiorze kalibracyjnym z etykietami:
+
+1. **Ranking drzew** (`ranking_drzew`). Domyślnie `mean_d_m`, czyli kryterium MeanD-M użyte
+   w eksperymentach artykułu: ocena drzewa to średni spadek marginesu próbek po usunięciu
+   tego jednego drzewa z zespołu (`spadek_marginesu`). Drzewa o największym spadku idą
+   pierwsze. Inne opcje: `accuracy` (trafność pojedynczego drzewa) i `none` (kolejność lasu).
+2. **Statystyki marginesu** (`statystyki_marginesu`): średnia `mu` i odchylenie standardowe
+   `sigma` marginesu próbek **poprawnie sklasyfikowanych**, a z nich liczba drzew:
+
+   ```
+   N* = N · (mu + k · sigma)          zaokrąglone, w przedziale [1, N]
+   ```
+
+**Faza po wdrożeniu**: każdą próbkę ocenia `N*` pierwszych drzew rankingu, wynik to
+głosowanie większościowe tych drzew. To jedyna badana metoda, w której liczba drzew jest
+**taka sama dla każdej próbki** (`trees_mean = trees_median = trees_max = N*`).
+
+Różnice względem IB, HYPER i GLEE w praktyce:
+
+- nie ma poziomu ufności `pi`; kompromis ustawia `k` (`k > 0`: więcej drzew i większa zgodność,
+  `k < 0`: mniej drzew). Końcowe sprawdzenie `agree_full ≥ pi` w `testing.py` tej metody nie
+  obejmuje,
+- zbiór kalibracyjny to **dane uczące oceniane out-of-bag** (jak w HYPER), a nie połowa zbioru
+  testowego jak w artykule. Dzięki temu cały zbiór testowy zostaje do pomiaru. Stąd `fit`
+  potrzebuje `X_train`, `y_train` i lasu z `bootstrap=True`,
+- `N*` rośnie ze średnim marginesem, więc na **łatwych** zbiorach (duże marginesy) metoda
+  zostawia **więcej** drzew niż na trudnych. Przy `k = 0` i lesie 501 drzew to ok. 310–350
+  drzew na sprawdzonych zbiorach binarnych, czyli wielokrotnie więcej niż IB przy zbliżonym
+  `agree_full`,
+- ranking `mean_d_m` wybiera drzewa najlepiej wspierające klasę prawdziwą: podzespół bywa
+  **trafniejszy** od pełnego lasu, ale przez to **mniej zgodny** z pełnym głosowaniem niż
+  tyle samo drzew w kolejności lasu (`ranking = "none"`),
+- działa dla dowolnej liczby klas, bez pliku z tablicą; `fit` trwa poniżej sekundy,
+- `set_k(k)` zmienia `k` po `fit` bez ponownej kalibracji. Artykuł wspomina o strojeniu `k`
+  na urządzeniu na podstawie obserwowanej trafności, ale nie podaje algorytmu, więc tej
+  części nie ma w kodzie.
+
+Parametry w configu: `k`, `ranking`, `n_calib` (ile losowych próbek uczących użyć do
+kalibracji, domyślnie 20000).
+
+---
+
 ## 3. Szybki start
 
 ```bat
@@ -174,7 +282,9 @@ config.toml ──► config.py (stałe) ──► testing.py
            train_test_split(test_size, random_state=seed)
            train_forest(n_trees, max_depth, seed)        ← trening na wszystkich rdzeniach
            build_methods([[methods]])                    ← NOWE instancje dla tego lasu
-           methods_rf.add_method(m) → m.fit(rf, X_train) ← np. dobór tablicy IB do T i l, a priori HYPER
+           methods_rf.add_method(m) → m.fit(rf, X_train, y_train)
+                                                         ← np. dobór tablicy IB do T i l, a priori HYPER,
+                                                           ranking i N* metody MARGIN
            benchmark.run(modes)                          ← batch i/lub online, pomiar czasu
            suite.add(benchmark)
    suite.summary()                                       ← tabele na ekran
@@ -229,6 +339,15 @@ pi = 0.98                             # → tablica T{n_trees}_L{l}_pi98.npz
 [[methods]]
 type = "hyper"                        # a priori z głosów out-of-bag, bez pliku z tablicą
 pi = 0.98
+
+[[methods]]
+type = "glee"                         # gaussowski przedział ufności (COMET), bez pliku i bez danych
+pi = 0.98
+
+[[methods]]
+type = "margin"                       # ranking drzew + N* = n_trees · (mu + k · sigma)
+k = 0.0                               # k > 0: więcej drzew, k < 0: mniej
+# ranking = "mean_d_m"                # albo "accuracy", "none"
 ```
 
 Zasady:
@@ -382,7 +501,8 @@ od tego, czy IB pomylił się względem pełnego głosowania.
 
 ### 7.2. Jak czytać wyniki
 
-- **Zgodność:** dla IB pruning `agree_full` powinno być ≥ `pi`. Na końcu `testing.py` wypisuje
+- **Zgodność:** metoda MARGIN nie ma `pi`; jej `agree_full` zależy od `k` i trzeba je po prostu
+  odczytać z wyników. Dla IB pruning `agree_full` powinno być ≥ `pi`. Na końcu `testing.py` wypisuje
   przebiegi, w których tak nie jest. Zwykle `agree_full` jest *znacznie* wyższe niż `pi`
   (np. 0,997 przy `pi = 0.98`), bo `pi` to (w ramach modelu urny Polyi) minimalne
 prawdopodobieństwo zgodności w momencie przerwania dla pojedynczej próbki, a większość
@@ -510,9 +630,19 @@ po wygenerowaniu tablicy.
 drzewach z malejącym zbiorem `aktywne`. Każde drzewo dostaje jednym wywołaniem wszystkie
 jeszcze niezdecydowane próbki, co ogranicza narzut wywołań sklearn. Pętla kończy się,
 gdy wszystkie próbki są zdecydowane. Pętle `predict_batch` i `predict_one` są wspólne dla
-IB i HYPER (klasa `SequentialPruning` w [base.py](src/methods/base.py)); metody różnią się
+IB, HYPER i GLEE (klasa `SequentialPruning` w [base.py](src/methods/base.py)); metody różnią się
 tylko regułą stopu. `czy_stop_wektorowo` sortuje głosy w każdym wierszu
 i czyta progi wektorowo przez `prog[tuple(t[:, 1:].T)]`.
+
+**`FixedVoting`: głosowanie stałej listy drzew.** `full_voting` i MARGIN robią to samo:
+każdą próbkę ocenia ta sama lista drzew `self.voters` (wszystkie drzewa albo `N*` pierwszych
+z rankingu). Pętle głosowania są więc raz, w klasie `FixedVoting` w
+[base.py](src/methods/base.py), bez sprawdzania stopu po każdym drzewie. Dzięki temu czas
+MARGIN i `full_voting` różni się tylko liczbą drzew.
+
+**Głosy out-of-bag w osobnym module.** HYPER i MARGIN kalibrują się na danych uczących tak,
+żeby każdą próbkę oceniały tylko drzewa, które jej nie widziały. Wspólny kod (indeksy
+bootstrapu, losowa podpróbka, sprawdzenie danych) jest w [oob.py](src/methods/oob.py).
 
 **Dwa tryby: `batch` i `online`.** Odpowiadają dwóm realnym zastosowaniom (przetwarzanie
 wsadowe vs serwowanie pojedynczych zapytań), w których ten sam algorytm daje bardzo różne
@@ -591,9 +721,10 @@ historycznych.
    gdzie `n_used` to liczba odpytanych drzew. `fit(rf)` z klasy bazowej ustawia
    `self.trees`, `self.classes`, `self.T`, `self.l`. Nadpisz go (wołając `super().fit(rf)`),
    jeśli metoda potrzebuje przygotowania pod konkretny las. Sygnatura to
-   `fit(rf, X_train=None)`: benchmark przekazuje dane uczące lasu.
+   `fit(rf, X_train=None, y_train=None)`: benchmark przekazuje dane uczące lasu.
    Metoda z wczesnym stopem może dziedziczyć po `SequentialPruning` i podać samo
-   `_stop_batch(votes)`.
+   `_stop_batch(votes)`. Metoda głosująca stałą listą drzew (jak powyższy przykład) może
+   dziedziczyć po `FixedVoting` i w `fit` ustawić samo `self.voters`.
 
 2. Zarejestruj ją w [src/methods/registry.py](src/methods/registry.py):
 
