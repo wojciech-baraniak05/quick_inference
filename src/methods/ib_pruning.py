@@ -37,9 +37,12 @@ class IBPruning(SequentialPruning):
                                                 w fit() do rozmiaru lasu,
         IBPruning(table="T501_L2_pi98.npz")   - konkretny plik,
         IBPruning(prog, pi=0.98)              - gotowa tablica.
+
+    order="random" (z opcjonalnym seed) odpytuje drzewa w losowej kolejności,
+    osobnej dla każdej próbki; domyślnie "fixed" = kolejność rf.estimators_.
     """
 
-    def __init__(self, prog=None, pi=None, table=None, name=None):
+    def __init__(self, prog=None, pi=None, table=None, name=None, order="fixed", seed=None):
         if table is not None:
             prog, pi = wczytaj_tablice(table)
         if prog is None and pi is None:
@@ -48,7 +51,9 @@ class IBPruning(SequentialPruning):
         self.pi = pi
         if name is None:
             name = f"IB_pi{pi_tag(pi)}" if pi is not None else "ib_pruning"
-        super().__init__(name)
+            if order == "random":
+                name += "_rand"
+        super().__init__(name, order=order, seed=seed)
 
     def fit(self, rf, X_train=None):
         super().fit(rf)

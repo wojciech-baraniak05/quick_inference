@@ -489,6 +489,12 @@ i uśrednia prawdopodobieństwa. Żeby przerwać w połowie, musimy sami iterowa
 głosy są wymienialne. Drzewa lasu losowego są uczone niezależnie, więc ich kolejność jest
 losowa. Sortowanie drzew np. po trafności złamałoby to założenie, a `pi` przestałoby
 oznaczać to, co ma oznaczać.
+Opcja `order = "random"` w bloku `ib_pruning` (z opcjonalnym `seed`) daje każdej próbce
+własną losową permutację drzew, więc kolejność jest losowa niezależnie od tego, jak las je
+zbudował. W trybie batch próbki pytające w danym kroku to samo drzewo są grupowane w jedno
+wywołanie `predict`, ale wywołań jest dużo więcej niż przy `"fixed"`, więc batch jest
+wyraźnie wolniejszy (ok. 10× w teście na 501 drzewach). W trybie online narzut jest
+niewielki (jedna permutacja na próbkę).
 
 **Tablica liczona offline, nie w locie.** Progi zależą tylko od `(T, l, pi)`, a nie od danych.
 Liczenie rekurencji przy każdej predykcji byłoby zbyt wolne, a odczyt z tablicy to O(1).

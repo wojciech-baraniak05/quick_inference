@@ -52,6 +52,13 @@ pi = 0.95
 enabled = false
 
 [[methods]]
+type = "ib_pruning"                 # IB z losową kolejnością drzew (nazwa: IB_pi98_rand)
+pi = 0.98
+order = "random"                    # "fixed" (domyślnie, rf.estimators_) | "random" (permutacja na próbkę)
+seed = 0                            # seed permutacji; generator tworzony od nowa w fit()
+enabled = false
+
+[[methods]]
 type = "hyper"                      # IB pruning z a priori z głosów out-of-bag (Soto i in., 2016)
 pi = 0.98                           # tablica liczona w fit() z danych uczących, bez pliku
 # n_prior = 20000                   # ile próbek uczących do głosów OOB (domyślnie 20000)

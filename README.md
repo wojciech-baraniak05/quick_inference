@@ -81,6 +81,10 @@ An `ib_pruning` method takes `pi`, and its table `T{n_trees}_L{l}_pi{pi*100}.npz
 picked to match each forest. You can give a specific file with `table` instead.
 If no table exists for a dataset's number of classes, the method is skipped for that
 dataset with a warning.
+With `order = "random"` (and an optional `seed`) every sample queries the trees in its own
+random permutation instead of the `rf.estimators_` order; the default name becomes
+`IB_pi{pi*100}_rand`. Batch mode is noticeably slower in this setting, because samples that
+query different trees cannot share one `predict` call.
 
 A `hyper` method takes `pi` and optionally `n_prior` (number of training samples used for
 the out-of-bag votes, default 20000) and `smooth` (prior smoothing window, default 5).
