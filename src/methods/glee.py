@@ -10,7 +10,7 @@ from sklearn.ensemble import RandomForestClassifier
 
 from generate_table_IB import pi_tag
 
-from .base import BoolArray, IntArray, SequentialPruning
+from .base import ORDER_SUFFIX, BoolArray, IntArray, Order, SequentialPruning
 
 
 def min_glosow(alfa: float) -> int:
@@ -54,14 +54,16 @@ class Glee(SequentialPruning):
     prog: IntArray
 
     def __init__(self, pi: float = 0.99, min_votes: int | None = None, fpc: bool = True,
-                 one_sided: bool = True, name: str | None = None) -> None:
+                 one_sided: bool = True, name: str | None = None,
+                 order: Order = "fixed", seed: int | None = None) -> None:
         if not 0.5 < pi <= 1:
             raise ValueError(f"Glee: pi musi być w (0.5, 1], a jest {pi}")
         if min_votes is not None and min_votes < 1:
             raise ValueError(f"Glee: min_votes musi być >= 1, a jest {min_votes}")
         self.pi, self.alfa = pi, round(1 - pi, 12)      # bez błędu zaokrągleń 1 - 0.99
         self.min_votes, self.fpc, self.one_sided = min_votes, fpc, one_sided
-        super().__init__(name or f"GLEE_pi{pi_tag(pi)}")
+        super().__init__(name or f"GLEE_pi{pi_tag(pi)}{ORDER_SUFFIX[order]}",
+                         order=order, seed=seed)
 
     def fit(self, rf: RandomForestClassifier, X_train: ArrayLike | None = None,
             y_train: ArrayLike | None = None) -> Self:

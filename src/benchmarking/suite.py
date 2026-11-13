@@ -13,8 +13,9 @@ class benchmark_suite:
     """Benchmarki identyfikowane kluczami z metadanych; ostatni klucz to powtórzenie,
     po którym uśrednia aggregate()."""
 
-    SUMMARY_COLS = ["accuracy", "f1", "agree_rf", "agree_full", "ms_per_sample",
-                    "speedup_vs_rf", "speedup_vs_full", "trees_mean", "trees_frac"]
+    # kolumny jakości zależą od zadania; summary() pokazuje te, które są w wynikach
+    SUMMARY_COLS = ["accuracy", "f1", "mae", "rmse", "r2", "agree_rf", "agree_full", "mad_full",
+                    "ms_per_sample", "speedup_vs_rf", "speedup_vs_full", "trees_mean", "trees_frac"]
 
     def __init__(self, keys: Sequence[str] = ("dataset", "seed"),
                  out_dir: str | Path | None = None) -> None:

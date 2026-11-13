@@ -1,12 +1,12 @@
 """Wspólny interfejs metod inferencji dla lasu losowego (opis: implementacja.md, rozdz. 1-3)."""
 from collections.abc import Callable
-from typing import Any, Literal, Self
+from typing import Any, Literal, Self, get_args
 from weakref import WeakKeyDictionary
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 Features = NDArray[np.float32]          # cechy w formacie drzew: float32, kształt (n, n_cech)
 IntArray = NDArray[np.integer[Any]]     # głosy (n, l), indeksy klas, liczby drzew, progi
@@ -14,7 +14,13 @@ FloatArray = NDArray[np.float64]
 BoolArray = NDArray[np.bool_]
 Labels = NDArray[Any]                   # etykiety klas w typie rf.classes_
 Prediction = tuple[Labels, IntArray]    # (y_pred, n_used) dla macierzy próbek
-Order = Literal["fixed", "random"]
+Order = Literal["fixed", "shuffled", "random"]
+Multiclass = Literal["full", "pair"]    # tablica dla wszystkich klas | lider kontra druga klasa
+Task = Literal["classification", "regression"]
+Forest = RandomForestClassifier | RandomForestRegressor
+
+ORDER_SUFFIX: dict[Order, str] = {"fixed": "", "shuffled": "_shuf", "random": "_rand"}
+MULTICLASS: tuple[Multiclass, ...] = get_args(Multiclass)
 
 
 def to_float32(X: ArrayLike) -> Features:
@@ -39,27 +45,60 @@ class FastTree:
         return self.leaf_class[self.apply(X)]
 
 
-_FAST_TREES: WeakKeyDictionary[
-    RandomForestClassifier, tuple[list[DecisionTreeClassifier], list[FastTree]]
-] = WeakKeyDictionary()
+class FastRegTree:
+    """Jedno drzewo lasu regresyjnego: jak FastTree, ale liść daje wartość, a nie klasę."""
+
+    __slots__ = ("apply", "leaf_value")
+    apply: Callable[[Features], IntArray]       # próbki -> indeksy liści
+    leaf_value: FloatArray                      # indeks liścia -> wyjście drzewa
+
+    def __init__(self, estimator: DecisionTreeRegressor) -> None:
+        tree = estimator.tree_
+        if tree.value.shape[1] != 1:
+            raise ValueError("FastRegTree obsługuje tylko drzewa z jednym wyjściem (n_outputs=1)")
+        self.apply = tree.apply
+        self.leaf_value = np.ascontiguousarray(tree.value[:, 0, 0])
+
+    def predict(self, X: Features) -> FloatArray:
+        return self.leaf_value[self.apply(X)]
+
+
+_FAST_TREES: WeakKeyDictionary[Forest, tuple[list[Any], list[Any]]] = WeakKeyDictionary()
+
+
+def _fast_trees(rf: Forest, klasa: type[FastTree] | type[FastRegTree]) -> list[Any]:
+    zapis = _FAST_TREES.get(rf)
+    if zapis is None or zapis[0] is not rf.estimators_:     # nowy las albo uczony ponownie
+        zapis = (rf.estimators_, [klasa(e) for e in rf.estimators_])
+        _FAST_TREES[rf] = zapis
+    return zapis[1]
 
 
 def fast_trees(rf: RandomForestClassifier) -> list[FastTree]:
     """Lista FastTree w kolejności rf.estimators_, wspólna dla metod tego samego lasu."""
-    zapis = _FAST_TREES.get(rf)
-    if zapis is None or zapis[0] is not rf.estimators_:     # nowy las albo uczony ponownie
-        zapis = (rf.estimators_, [FastTree(e) for e in rf.estimators_])
-        _FAST_TREES[rf] = zapis
-    return zapis[1]
+    return _fast_trees(rf, FastTree)
+
+
+def fast_reg_trees(rf: RandomForestRegressor) -> list[FastRegTree]:
+    """Lista FastRegTree w kolejności rf.estimators_, wspólna dla metod tego samego lasu."""
+    return _fast_trees(rf, FastRegTree)
+
+
+def czy_stop_para(votes: IntArray, prog: IntArray) -> BoolArray:
+    """Reguła dla pary lider - druga klasa: stop, gdy t_1 >= prog[t_2]."""
+    t = np.partition(votes, -2, axis=1)             # dwie ostatnie kolumny: t_2, t_1
+    return t[:, -1] >= prog[t[:, -2]]
 
 
 class InferenceMethod:
     """Bazowa klasa metod inferencji. Atrybuty bez wartości ustawia fit()."""
 
     name: str = "method"
+    task: Task = "classification"
     pi: float | None = None     # poziom ufności; None dla metod, które go nie mają
-    rf: RandomForestClassifier
-    trees: list[FastTree]
+    delta: float | None = None  # tolerancja w regresji; None dla metod, które jej nie mają
+    rf: Any                     # RandomForestClassifier (w regresji RandomForestRegressor)
+    trees: list[Any]            # FastTree (w regresji FastRegTree)
     classes: Labels
     T: int                      # liczba drzew
     l: int                      # liczba klas
@@ -71,6 +110,8 @@ class InferenceMethod:
 
     def fit(self, rf: RandomForestClassifier, X_train: ArrayLike | None = None,
             y_train: ArrayLike | None = None) -> Self:
+        if not hasattr(rf, "classes_"):
+            raise ValueError(f"{self.name}: metoda klasyfikacyjna, a las to {type(rf).__name__}")
         self.rf = rf
         self.trees = fast_trees(rf)
         self.classes = rf.classes_
@@ -129,7 +170,7 @@ class FixedVoting(InferenceMethod):
 class SequentialPruning(InferenceMethod):
     """Wczesny stop: drzewa głosują po kolei, aż reguła stopu podklasy uzna wynik za pewny."""
 
-    ORDERS: tuple[Order, ...] = ("fixed", "random")
+    ORDERS: tuple[Order, ...] = get_args(Order)
     rng: np.random.Generator
 
     def __init__(self, name: str | None = None, order: Order = "fixed",
@@ -143,6 +184,8 @@ class SequentialPruning(InferenceMethod):
             y_train: ArrayLike | None = None) -> Self:
         super().fit(rf)
         self.rng = np.random.default_rng(self.seed)
+        if self.order == "shuffled":                # jedna permutacja lasu dla wszystkich próbek
+            self.trees = [self.trees[j] for j in self.rng.permutation(self.T)]
         return self
 
     def _stop_batch(self, votes: IntArray) -> BoolArray:

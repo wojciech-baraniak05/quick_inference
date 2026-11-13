@@ -8,10 +8,19 @@ seed = 1   # seed generowania zbiorów syntetycznych
 # benchmark (src/testing.py)
 # ---------------------------------------------------------------------------
 [benchmark]
+# zadanie: "classification" (las klasyfikacyjny, metody klasyfikacyjne) albo "regression"
+# (las regresyjny, metody *_reg i full_averaging). Bloki [[methods]] drugiego zadania są
+# pomijane, więc jeden plik może opisywać oba; zmienia się task, datasets i out_dir,
+# np. task = "regression", datasets = ["generated/regression"], out_dir = "results/regression"
+task = "classification"
+
 # zbiory danych: ścieżki względem data/; folder = wszystkie pliki *.parquet w nim,
 # np. ["generated/binary", "generated/multiclass/multi_small.parquet"]
 datasets = ["generated/binary"]
 out_dir = "results/binary"          # względem data/
+# kolumny zbiorów, które nie są cechami (pomijane, jeśli są w pliku); w gas_turbine
+# to rok pomiaru i drugi cel
+drop_columns = ["year", "CO"]
 
 # scenariusze: "batch" - cały X_test naraz, "online" - każda próbka osobno
 modes = ["batch", "online"]
@@ -24,6 +33,7 @@ n_repeats = 1                       # ile razy mierzyć czas każdej metody (med
 # true  - badamy też las losowy ze scikit-learn (rf_sklearn: rf.predict, soft voting,
 #         czyli średnia prawdopodobieństw drzew) i porównujemy z nim (agree_rf, speedup_vs_rf)
 # false - badamy tylko metody, które odpytują pojedyncze drzewa (hard voting)
+# w regresji rf_sklearn to rf.predict lasu regresyjnego (średnia wyjść drzew)
 sklearn_soft_voting = true
 
 
@@ -34,9 +44,18 @@ max_depth = 5                       # usuń klucz, żeby drzewa nie miały limit
 
 # ---------------------------------------------------------------------------
 # metody badane w benchmarku: jeden blok [[methods]] na metodę.
-#   type    - "full_voting" | "ib_pruning" | "hyper" | "glee" | "margin"
+#   type    - klasyfikacja: "full_voting" | "ib_pruning" | "hyper" | "glee" | "margin" | "own"
+#             regresja:     "full_averaging" | "ib_reg" | "glee_reg" | "own_reg"
 #   name    - opcjonalna nazwa w wynikach
 #   enabled - false wyłącza metodę bez usuwania bloku
+# Metody z wczesnym stopem (wszystkie poza full_* i margin) mają też:
+#   order   - "fixed" (domyślnie, kolejność rf.estimators_) | "shuffled" (jedna losowa
+#             permutacja lasu, wspólna dla próbek) | "random" (permutacja na próbkę)
+#   seed    - seed permutacji; generator tworzony od nowa w fit()
+# ib_pruning, hyper i own mają multiclass:
+#   "full" (domyślnie) - tablica dla wszystkich klas naraz (IB: plik T{T}_L{l}; HYPER i own:
+#                        do 3 klas przy 501 drzewach)
+#   "pair"             - lider kontra druga klasa na tablicach binarnych, dowolna liczba klas
 # ---------------------------------------------------------------------------
 [[methods]]
 type = "full_voting"                # hard voting wszystkich drzew (odniesienie dla agree_full)
@@ -54,8 +73,14 @@ enabled = false
 [[methods]]
 type = "ib_pruning"                 # IB z losową kolejnością drzew (nazwa: IB_pi98_rand)
 pi = 0.98
-order = "random"                    # "fixed" (domyślnie, rf.estimators_) | "random" (permutacja na próbkę)
+order = "random"                    # "fixed" | "shuffled" | "random" (opis wyżej)
 seed = 0                            # seed permutacji; generator tworzony od nowa w fit()
+enabled = false
+
+[[methods]]
+type = "ib_pruning"                 # IB dla wielu klas na tablicy binarnej (nazwa: IB_pi98_pair)
+pi = 0.98                           # tablica data/tablice/T{n_trees}_L2_pi98.npz przy każdej liczbie klas
+multiclass = "pair"
 enabled = false
 
 [[methods]]
@@ -63,6 +88,7 @@ type = "hyper"                      # IB pruning z a priori z głosów out-of-ba
 pi = 0.98                           # tablica liczona w fit() z danych uczących, bez pliku
 # n_prior = 20000                   # ile próbek uczących do głosów OOB (domyślnie 20000)
 # smooth = 5                        # okno wygładzania a priori (0 = bez wygładzania)
+# multiclass = "pair"               # tablice binarne lider - druga klasa (nazwa: HYPER_pi98_pair)
 
 [[methods]]
 type = "glee"                       # gaussowski przedział ufności (GLEE z COMET, Basilico i in., 2011)
@@ -76,3 +102,49 @@ type = "margin"                     # stała liczba drzew z marginesu lasu (Barb
 k = 0.0                             # N* = n_trees * (mu + k * sigma); k > 0: więcej drzew, k < 0: mniej
 # ranking = "mean_d_m"              # kolejność drzew: "mean_d_m" (artykuł) | "accuracy" | "none"
 # n_calib = 20000                   # ile próbek uczących do kalibracji out-of-bag (domyślnie 20000)
+
+[[methods]]
+type = "own"                        # metoda własna: HYPER z a priori lam * P_OOB + (1 - lam) * P_jednostajny
+pi = 0.98                           # (nazwa: OWN_lam0.5_pi98)
+lam = 0.5                           # 1 = HYPER, 0 = IB pruning
+# glee = true                       # wariant rozszerzony: stop, gdy pozwala HYPER lub GLEE (nazwa: ..._glee)
+# pi_glee = 0.99                    # poziom ufności reguły GLEE (domyślnie pi)
+# min_votes = 15                    # jak w glee
+# n_prior, smooth, multiclass       # jak w hyper
+
+[[methods]]
+type = "own"
+pi = 0.98
+lam = 0.5
+glee = true
+enabled = false
+
+
+# --- regresja (task = "regression") -----------------------------------------
+# tolerancja: dokładnie jedno z
+#   delta     - bezwzględna, w jednostkach zmiennej celu
+#   delta_std - w odchyleniach standardowych y_train (przeliczana na delta w fit())
+# stop, gdy przedział dla średniej pełnego lasu mieści się w +-delta z ufnością pi
+[[methods]]
+type = "full_averaging"             # średnia wszystkich drzew (odniesienie dla agree_full)
+
+[[methods]]
+type = "ib_reg"                     # regresyjny IB pruning: przedział predykcyjny t-Studenta
+pi = 0.98                           # (nazwa: IBREG_pi98_ds0.05)
+delta_std = 0.05
+# t_min = 2                         # minimalna liczba drzew przed stopem (co najmniej 2)
+
+[[methods]]
+type = "glee_reg"                   # regresyjny GLEE: przedział normalny z poprawką na populację skończoną
+pi = 0.98
+delta_std = 0.05
+# t_min = 15                        # domyślnie jak min_votes w glee (15/30/45); najmniej 2
+# fpc = true
+
+[[methods]]
+type = "own_reg"                    # metoda własna: IB z a priori wariancji wyjść z danych out-of-bag
+pi = 0.98                           # (nazwa: OWNREG_nu5_pi98_ds0.05)
+delta_std = 0.05
+nu0 = 5.0                           # siła a priori w pseudoobserwacjach; 0 = ib_reg
+# t_min = 1                         # a priori pozwala na stop już po pierwszym drzewie
+# n_prior = 20000                   # ile próbek uczących do wariancji OOB
