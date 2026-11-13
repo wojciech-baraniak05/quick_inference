@@ -23,6 +23,16 @@ and then lets only the first `N*` of them vote, with `N*` derived from the fores
 (see [Margin-based early stopping](#margin-based-early-stopping)). Unlike the other three,
 it queries the same number of trees for every sample.
 
+On top of the four literature methods, the project's design document adds
+(see [Own methods, regression and multi-class extensions](#own-methods-regression-and-multi-class-extensions)):
+
+- an **own classification method** (`own`): HYPER with its out-of-bag prior mixed with a
+  uniform prior, optionally combined with the GLEE rule;
+- **regression variants** of IB pruning and GLEE (`ib_reg`, `glee_reg`) and an **own
+  regression method** (`own_reg`), for `RandomForestRegressor` forests;
+- a **pairwise multi-class rule** for IB pruning, HYPER and the own method
+  (`multiclass = "pair"`), and a `shuffled` tree order.
+
 ## How to run?
 
 Requires Python 3.12 or newer (the pinned numpy and scipy do not support 3.11).
@@ -81,9 +91,12 @@ from config import SEED, MODES, METHODS
 | Section | Keys |
 |---|---|
 | top level | `seed`: random seed for synthetic dataset generation |
-| `[benchmark]` | `datasets` (folders or files under `data/`), `out_dir`, `modes` (`batch`, `online`), `seeds`, `test_size`, `n_online`, `n_repeats`, `sklearn_soft_voting` |
+| `[benchmark]` | `task` (`classification` or `regression`, default `classification`), `datasets` (folders or files under `data/`), `drop_columns` (dataset columns that are not features), `out_dir`, `modes` (`batch`, `online`), `seeds`, `test_size`, `n_online`, `n_repeats`, `sklearn_soft_voting` |
 | `[forest]` | `n_trees`, `max_depth` (omit for unlimited depth) |
-| `[[methods]]` | one block per benchmarked method: `type` (`full_voting`, `ib_pruning`, `hyper`, `glee` or `margin`), optional `name` and `enabled`, plus the method's parameters |
+| `[[methods]]` | one block per benchmarked method: `type` (classification: `full_voting`, `ib_pruning`, `hyper`, `glee`, `margin`, `own`; regression: `full_averaging`, `ib_reg`, `glee_reg`, `own_reg`), optional `name` and `enabled`, plus the method's parameters |
+
+`task` selects the forest (`RandomForestClassifier` or `RandomForestRegressor`). Method
+blocks that belong to the other task are skipped, so one file can hold both sets.
 
 `sklearn_soft_voting = true` adds `rf_sklearn` to the benchmark. That is scikit-learn's
 `rf.predict`, which averages tree probabilities (soft voting), and the results get the
@@ -112,6 +125,18 @@ A `margin` method takes `k` (default 0; larger = more trees) and optionally `ran
 (`mean_d_m`, `accuracy` or `none`; default `mean_d_m`) and `n_calib` (number of training
 samples used for calibration, default 20000). It needs no table file and works for any
 number of classes. It has no `pi`: its results are named `MARGIN_k0`, `MARGIN_k-0.5` etc.
+
+An `own` method takes `pi`, `lam` (prior mixing weight, default 0.5), `glee`
+(default `false`), `pi_glee` and `min_votes` for the GLEE rule, and HYPER's `n_prior`,
+`smooth` and `multiclass`.
+
+The regression methods `ib_reg`, `glee_reg` and `own_reg` take `pi` and exactly one of
+`delta` (tolerance in target units) and `delta_std` (tolerance in standard deviations of
+`y_train`), plus `t_min`; `glee_reg` also takes `fpc`, and `own_reg` takes `nu0`
+(prior strength, default 5) and `n_prior`.
+
+Every early-stopping method (all except `full_*` and `margin`) takes `order`
+(`fixed`, `shuffled` or `random`) and `seed`.
 
 To add a setting, add the key to `config.toml` and expose it in `src/config.py`.
 
@@ -231,6 +256,44 @@ There is no confidence level: `k` trades trees for agreement directly, and `agre
 not checked against a `pi`. Because `N*` grows with the mean margin, the method keeps *more*
 trees on easy datasets (large margins) than on hard ones.
 
+## Own methods, regression and multi-class extensions
+
+These come from the project's design document rather than from a single paper. Details:
+[`instrukcja.md`](instrukcja.md) sections 2d–2f and [`implementacja.md`](implementacja.md)
+chapters 3.5–3.6, 11 and 12 (both in Polish).
+
+**Own classification method (`own`).** HYPER with the prior
+`λ · P_OOB + (1 − λ) · P_uniform`. `lam = 1` is HYPER, `lam = 0` is IB pruning, and values
+in between trade HYPER's speed for IB pruning's caution when the out-of-bag prior is
+unreliable. With `glee = true` voting stops as soon as either the HYPER rule or the GLEE
+rule allows it; the two tables are merged in `fit`, so prediction costs the same.
+
+**Regression (`task = "regression"`).** The forest predicts the mean of the tree outputs.
+Trees are queried in turn and voting stops when, with confidence `pi`, the full-forest mean
+is within `delta` of the running mean: `c[t] · s_t ≤ delta`, where `s_t` is the standard
+deviation of the outputs seen so far and `c[t]` is a multiplier computed once in `fit`:
+
+| Type | `c[t]` |
+|---|---|
+| `ib_reg` | Student-t quantile with `t − 1` degrees of freedom times `sqrt((T − t) / (T·t))` |
+| `glee_reg` | normal quantile times the finite population correction over `sqrt(t)` |
+| `own_reg` | as `ib_reg` with `nu0 + t − 1` degrees of freedom, and `s_t` replaced by a spread that blends in a prior variance |
+
+`own_reg` estimates the typical per-sample variance of tree outputs from out-of-bag
+predictions (the median over training samples) and treats it as `nu0` extra observations;
+`nu0 = 0` is `ib_reg`. The reference method is `full_averaging` (the mean of all trees), and
+`agree_full` is the share of samples whose prediction is within the method's `delta` of it.
+`pi` is a model-based level, not a guarantee: check `agree_full` in the results.
+
+**Pairwise multi-class rule (`multiclass = "pair"`).** IB pruning, HYPER and `own` can test
+the stopping condition on the leader and the runner-up only, using binary tables. This
+works for any number of classes (the default `"full"` tables are limited to 2–3 classes at
+501 trees) but ignores the chance that a third class wins, so `agree_full` has to be
+checked. GLEE has always worked this way.
+
+**Tree order.** `order = "shuffled"` draws one random permutation of the forest in `fit`
+(with `seed`) and uses it for every sample, at no prediction cost.
+
 ## Running the benchmark
 
 [`src/testing.py`](src/testing.py) reads everything from `config.toml`.
@@ -241,8 +304,9 @@ selected `modes`:
 - **batch**: the whole test set at once;
 - **online**: the first `n_online` samples, predicted one by one.
 
-The default config compares `rf_sklearn`, `full_voting`, `IB_pi98`, `HYPER_pi98`, `GLEE_pi98` and `MARGIN_k0` on the binary synthetic
-datasets (501 trees, depth 5, seeds 1–3).
+The default config compares `rf_sklearn`, `full_voting`, `IB_pi98`, `HYPER_pi98`, `GLEE_pi98`, `MARGIN_k0` and `OWN_lam0.5_pi98` on the binary synthetic
+datasets (501 trees, depth 5, seeds 1–3). It also holds the regression blocks; to run them,
+set `task = "regression"`, point `datasets` at `generated/regression` and change `out_dir`.
 
 Run it from `src/`:
 
@@ -261,6 +325,9 @@ Reported per method: accuracy, macro precision/recall/F1, agreement with sklearn
 full voting (`agree_rf`, `agree_full`), prediction time, speed-up, and trees queried per sample
 (`trees_mean`, `trees_median`, `trees_max`, `trees_frac`).
 The `*_rf` and `*_full` columns appear only when `rf_sklearn` and `full_voting` are in the benchmark.
+For regression the quality columns are `mae`, `rmse` and `r2`, the full-forest reference is
+`full_averaging`, and `mad_*` / `maxdiff_*` give the mean and largest absolute difference
+from the reference.
 
 ### Adding an inference method
 
@@ -331,7 +398,10 @@ src/
     hyper.py                 HYPER (out-of-bag prior, table computed in fit)
     glee.py                  GLEE (Gaussian confidence interval, from the COMET paper)
     margin.py                margin-based early stopping (tree ranking + N* from the margin)
-    oob.py                   out-of-bag predictions on the training data (used by hyper, margin)
+    regression.py            regression: rf_sklearn, full_averaging, the shared early-stopping
+                             loop, ib_reg and glee_reg
+    own.py                   own methods: own (classification), own_reg (regression)
+    oob.py                   out-of-bag predictions on the training data (used by hyper, margin, own)
     registry.py              builds methods from [[methods]] in config.toml
   benchmarking/              benchmark machinery, independent of config.toml
     modes.py                 batch / online scenarios

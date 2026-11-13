@@ -36,6 +36,8 @@ Każdą metodę porównujemy z dwiema metodami odniesienia:
 | `HYPER_pi98` itd. | IB pruning z a priori rozkładu głosów szacowanym z danych (rozdz. 2a) | badana metoda |
 | `GLEE_pi98` itd. | wczesny stop z gaussowskim przedziałem ufności, z artykułu COMET (rozdz. 2b) | badana metoda |
 | `MARGIN_k0` itd. | ranking drzew i stała liczba drzew wyznaczona z marginesu lasu (rozdz. 2c) | badana metoda |
+| `OWN_lam0.5_pi98` itd. | metoda własna: HYPER z a priori zmieszanym z jednostajnym, opcjonalnie z regułą GLEE (rozdz. 2e) | badana metoda |
+| `IBREG_…`, `GLEEREG_…`, `OWNREG_…` | regresja: wczesny stop, gdy średnia jest już w tolerancji `delta` (rozdz. 2f); odniesieniem jest `full_averaging` | badane metody |
 
 > **Ważne:** IB pruning przybliża *hard voting*, a nie `rf.predict`. Soft i hard voting
 > zwykle dają ten sam wynik, ale nie zawsze (`agree_rf` między nimi to ok. 0,99). Dlatego to
@@ -254,6 +256,127 @@ kalibracji, domyślnie 20000).
 
 ---
 
+## 2d. Wiele klas: reguła pary i kolejność drzew
+
+Te dwa ustawienia pochodzą z dokumentu projektu i dotyczą kilku metod naraz.
+
+**`multiclass = "pair"`** (`ib_pruning`, `hyper`, `own`). Domyślne `"full"` to tablica dla
+wszystkich klas naraz: dokładna, ale przy 501 drzewach wykonalna tylko dla 2–3 klas
+(rozdz. 8). `"pair"` sprawdza warunek stopu dla **klasy prowadzącej i drugiej w kolejności**
+na tablicach binarnych, tak jakby pozostałe głosy miały trafić tylko do tej pary. Działa
+dla dowolnej liczby klas:
+
+- IB używa tablicy binarnej `T{T}_L2_pi….npz` (jest w repozytorium dla 501 drzew),
+- HYPER i metoda własna budują binarne a priori dla każdej klasy prowadzącej z próbek
+  out-of-bag, w których ta klasa była w pierwszej dwójce,
+- GLEE działa tak zawsze, więc nie ma tego parametru.
+
+To przybliżenie: nie uwzględnia, że wygrać może klasa dalsza niż druga. Dlatego
+`agree_full` może spaść poniżej `pi` w zbiorach z wieloma klasami o podobnej liczbie
+głosów; trzeba to sprawdzać w wynikach. Nazwy dostają przyrostek `_pair`.
+
+**`order`** (wszystkie metody z wczesnym stopem, także regresyjne):
+
+| Wartość | Kolejność drzew | Przyrostek nazwy |
+|---|---|---|
+| `"fixed"` (domyślnie) | `rf.estimators_` | brak |
+| `"shuffled"` | jedna losowa permutacja lasu z `seed`, wspólna dla próbek | `_shuf` |
+| `"random"` | osobna permutacja dla każdej próbki (wolny batch, rozdz. 9) | `_rand` |
+
+`"shuffled"` to kolejność opisana w dokumencie projektu. Kosztuje tyle co `"fixed"`.
+
+---
+
+## 2e. Metoda własna (klasyfikacja): `own`
+
+Kod w [src/methods/own.py](src/methods/own.py), klasa `Own`. Punkt wyjścia to HYPER: jego
+zaletą jest a priori z danych, a słabością wrażliwość na złe oszacowanie tego a priori
+(mały zbiór, inne dane testowe niż uczące). Metoda miesza więc a priori z głosów
+out-of-bag z jednostajnym:
+
+```
+P(T) = lam · P_OOB(T) + (1 − lam) · P_jednostajny(T)
+```
+
+- `lam = 1` to HYPER, `lam = 0` to IB pruning, wartości pośrednie dają kompromis między
+  szybkością HYPER a ostrożnością IB,
+- żaden układ głosów nie ma zerowego prawdopodobieństwa a priori,
+- reszta (model urny, osobne tablice dla klas prowadzących, pętla predykcji) jest z HYPER,
+  więc metoda ma te same wymagania: `X_train` i las z `bootstrap=True`.
+
+**Wariant rozszerzony** (`glee = true`): głosowanie kończy się, gdy pozwala na to reguła
+HYPER **albo** reguła GLEE. Tablice są łączone w `fit`, więc predykcja nie jest droższa.
+Dwie reguły naraz to więcej okazji do błędu, więc porównuj warianty przy tym samym
+`agree_full`, a nie przy tym samym `pi`; `pi_glee` ustawia osobny poziom reguły GLEE.
+
+Parametry w configu: `pi`, `lam` (domyślnie 0.5), `glee`, `pi_glee`, `min_votes`,
+`n_prior`, `smooth`, `multiclass`, `order`, `seed`.
+
+W próbnym przebiegu (5000 próbek, 2 klasy, 501 drzew, `pi = 0.98`, 2 seedy) HYPER
+odpytywał średnio 14,5 drzewa przy `agree_full` 0,981 (jeden przebieg poniżej `pi`),
+IB 19,0 drzewa przy 0,996, a `own` z `lam = 0.5` 17,7 drzewa przy 0,994. To jeden mały
+zbiór, nie wynik badania.
+
+---
+
+## 2f. Regresja: `ib_reg`, `glee_reg`, `own_reg`
+
+Kod w [src/methods/regression.py](src/methods/regression.py) i
+[src/methods/own.py](src/methods/own.py). Las to `RandomForestRegressor`, a jego predykcją
+jest **średnia** wyjść drzew. Drzewa są pytane po kolei i po każdym liczona jest średnia
+`y_t` oraz odchylenie standardowe `s_t` dotychczasowych wyjść. Głosowanie kończy się, gdy
+z ufnością `pi` średnia wszystkich `T` drzew leży nie dalej niż `delta` od bieżącej:
+
+```
+c[t] · s_t ≤ delta
+```
+
+Metody różnią się tylko mnożnikiem `c[t]`, liczonym raz w `fit`:
+
+| Metoda | `c[t]` | Skąd |
+|---|---|---|
+| `ib_reg` | `t_{t−1,(1+pi)/2} · sqrt((T − t) / (T · t))` | przedział predykcyjny t-Studenta (wariant bayesowski z nieinformatywnym a priori) |
+| `glee_reg` | `z_{(1+pi)/2} · ρ_t / sqrt(t)` | przedział normalny z poprawką na populację skończoną `ρ_t` |
+| `own_reg` | `t_{nu0+t−1,(1+pi)/2} · sqrt((T − t) / (T · t))`, a zamiast `s_t` rozrzut ważony z a priori | metoda własna |
+
+**`own_reg`** przenosi pomysł HYPER na regresję: z danych out-of-bag szacuje typową
+wariancję wyjść drzew dla jednej próbki (`sigma0²`, mediana po próbkach uczących)
+i traktuje ją jak `nu0` dodatkowych obserwacji:
+
+```
+sigma_t² = (nu0 · sigma0² + (t − 1) · s_t²) / (nu0 + t − 1)
+```
+
+Przy małym `t` dominuje wiedza z danych uczących, potem rozrzut tej konkretnej próbki.
+`nu0 = 0` to dokładnie `ib_reg`. Rozrzut nie spada do zera, więc metoda nie potrzebuje
+minimalnej liczby drzew i nie staje tylko dlatego, że dwa pierwsze drzewa dały ten sam
+wynik.
+
+**Tolerancja.** Podaj dokładnie jedno z:
+
+- `delta`: w jednostkach zmiennej celu (tak definiuje ją dokument projektu),
+- `delta_std`: w odchyleniach standardowych `y_train`; wygodne, gdy jeden config obejmuje
+  zbiory o różnej skali celu. Przeliczona wartość jest w metadanych przebiegu (`deltas`).
+
+**Jak czytać wyniki.** `agree_full` to odsetek próbek, dla których predykcja różni się od
+`full_averaging` o nie więcej niż `delta` tej metody, czyli odpowiednik zgodności
+z pełnym głosowaniem; porównuje się go z `pi`. Model zakłada, że wyjścia drzew dla jednej
+próbki są w przybliżeniu normalne i niezależne, więc `pi` nie jest gwarancją. W próbnych
+przebiegach (2 zbiory syntetyczne po 4000 próbek, 501 drzew, `pi = 0.98`,
+`delta_std = 0.05`) `agree_full` wyszło średnio 0,970 dla `ib_reg`, 0,978 dla `glee_reg`
+i 0,980 dla `own_reg` przy ok. 160 drzewach z 501, a pojedyncze przebiegi były poniżej
+`pi`.
+
+**`t_min`.** `ib_reg`: domyślnie 2. `glee_reg`: domyślnie jak `min_votes` w GLEE (15, 30
+albo 45). Z `t_min = 2` reguła normalna staje już po 2–3 drzewach, gdy ich wyjścia są
+przypadkiem bliskie, i `agree_full` spada wyraźnie poniżej `pi` (0,80–0,94 w tych samych
+przebiegach). `own_reg`: domyślnie 1.
+
+Żeby uruchomić regresję, ustaw w `[benchmark]`: `task = "regression"`, `datasets` na
+zbiory regresyjne i inny `out_dir` (rozdz. 5).
+
+---
+
 ## 3. Szybki start
 
 ```bat
@@ -316,8 +439,10 @@ Wszystkie parametry badania są w [config.toml](config.toml). Nie trzeba niczego
 seed = 1                              # tylko dla generate_datasets.py
 
 [benchmark]
+task = "classification"               # albo "regression": las regresyjny i metody *_reg
 datasets = ["generated/binary"]       # foldery (wszystkie *.parquet) lub pojedyncze pliki, względem data/
 out_dir  = "results/binary"           # względem data/; NADPISYWANY przy każdym uruchomieniu
+drop_columns = ["year", "CO"]         # kolumny zbiorów, które nie są cechami
 modes    = ["batch", "online"]
 seeds    = [1, 2, 3]                  # seed = podział train/test ORAZ las
 test_size = 0.3
@@ -351,10 +476,29 @@ pi = 0.98
 type = "margin"                       # ranking drzew + N* = n_trees · (mu + k · sigma)
 k = 0.0                               # k > 0: więcej drzew, k < 0: mniej
 # ranking = "mean_d_m"                # albo "accuracy", "none"
+
+[[methods]]
+type = "own"                          # metoda własna (rozdz. 2e)
+pi = 0.98
+lam = 0.5                             # 1 = HYPER, 0 = IB pruning
+# glee = true                         # wariant rozszerzony: HYPER lub GLEE
+# multiclass = "pair"                 # też w ib_pruning i hyper (rozdz. 2d)
+# order = "shuffled"                  # też w ib_pruning, hyper, glee i metodach *_reg
+
+[[methods]]                           # --- regresja: używane tylko przy task = "regression"
+type = "full_averaging"               # średnia wszystkich drzew (odniesienie dla agree_full)
+
+[[methods]]
+type = "ib_reg"                       # albo "glee_reg", "own_reg" (rozdz. 2f)
+pi = 0.98
+delta_std = 0.05                      # albo delta = ... w jednostkach zmiennej celu
 ```
 
 Zasady:
 
+- `task` wybiera rodzaj lasu. Bloki `[[methods]]` drugiego zadania są pomijane, więc oba
+  zestawy metod mogą stać w jednym pliku. Przełączenie na regresję to zmiana `task`,
+  `datasets` i `out_dir`.
 - Wszystkie pola bloku `[[methods]]` poza `type`, `enabled` przekazywane są do konstruktora
   klasy jako argumenty (`IBPruning(pi=0.98)`). Literówka w nazwie parametru daje czytelny błąd.
 - Nazwy metod muszą być unikalne. Dwa bloki `ib_pruning` z tym samym `pi` wymagają różnych `name`.
@@ -376,11 +520,13 @@ Każdy plik to jedna tabela:
 | *(opcjonalnie)* inne nazwy, np. `year`, `CO` w `gas_turbine` | dowolny | kolumny dodatkowe |
 
 `wczytaj()` ([src/benchmarking/data.py](src/benchmarking/data.py)) bierze **wszystkie kolumny
-poza `target`** jako cechy, a kolumny nieliczbowe zamienia na kody całkowite
-(`astype("category").cat.codes`). Zwraca `X` typu `float` i `y`.
+poza `target`** i poza wymienionymi w `benchmark.drop_columns` jako cechy, a kolumny
+nieliczbowe zamienia na kody całkowite (`astype("category").cat.codes`). Zwraca `X` typu
+`float` i `y`.
 
-> Uwaga: w `gas_turbine` kolumny `year` i `CO` *też* trafią do cech, jeśli ten zbiór kiedyś
-> zostanie użyty w benchmarku. Trzeba je wtedy usunąć ręcznie.
+> Uwaga: w `gas_turbine` kolumny `year` i `CO` nie są cechami (`CO` to drugi cel). Domyślne
+> `drop_columns = ["year", "CO"]` je pomija. Własne kolumny dodatkowe trzeba dopisać do tej
+> listy, inaczej trafią do cech.
 
 Własny zbiór dodajesz, zapisując DataFrame w tym formacie:
 
@@ -403,7 +549,7 @@ Dostępne zbiory i ich liczba klas (liczba klas jest istotna, patrz rozdz. 8):
 | `multi_many_classes` | 20 | 50 000 |
 | `real_data/binary/susy` | 2 | **5 000 000** |
 | `real_data/multiclass/shuttle` | 7 | 58 000 |
-| `generated/regression/*`, `real_data/regression/gas_turbine` | regresja | nie dla tego benchmarku |
+| `generated/regression/*` (9 plików), `real_data/regression/gas_turbine` | regresja | 500 – 500 000; wymagają `task = "regression"` |
 
 Folder `data/real_data/extra_time_data/` (MetroPT, WISDM, czujniki gazu) zawiera surowe pliki
 dodane ręcznie. Kod ich nie używa.
@@ -458,6 +604,18 @@ uruchomienie liczy wszystko od początku).
 | `speedup_vs_rf`, `speedup_vs_full` | ile razy szybciej niż metoda odniesienia (>1 = szybciej) |
 | `trees_mean`, `trees_median`, `trees_max` | liczba odpytanych drzew na próbkę |
 | `trees_frac` | `trees_mean / T`, czyli jaka część lasu była potrzebna |
+
+W regresji (`task = "regression"`) kolumny jakości i zgodności są inne:
+
+| Kolumna | Znaczenie |
+|---|---|
+| `mae`, `rmse`, `r2` | jakość względem prawdziwych wartości |
+| `agree_rf`, `agree_full` | odsetek próbek z predykcją nie dalej niż `delta` metody od `rf_sklearn` / `full_averaging`; dla metod bez `delta` odsetek predykcji równych z dokładnością arytmetyki |
+| `mad_rf`, `mad_full` | średnia różnica bezwzględna względem metody odniesienia |
+| `maxdiff_rf`, `maxdiff_full` | największa różnica bezwzględna |
+
+Kolumny czasu i liczby drzew są te same. W `runs/*.npz` `classes` jest puste, `Y_pred_*`
+to liczby, a metadane mają dodatkowo `task` i `deltas` (nazwa metody → tolerancja po `fit`).
 
 `aggregate_*.csv` ma **dwa wiersze nagłówka** (metryka, statystyka), więc czytamy go tak:
 
@@ -568,9 +726,11 @@ wcześniejszą wersję generatora (np. `CATEGORICAL_FEATURES`), której w
 
 ## 8. Ograniczenia i pułapki
 
-1. **Tylko klasyfikacja.** Benchmark używa `RandomForestClassifier`. Zbiory regresyjne
-   (`generated/regression`, `gas_turbine`) są przygotowane na przyszłość. Wpisanie ich do
-   `datasets` zrobi z każdej unikalnej wartości `target` osobną klasę. Nie rób tego.
+1. **Zadanie ustawia się ręcznie.** `benchmark.task` decyduje, czy powstaje
+   `RandomForestClassifier`, czy `RandomForestRegressor`; kod nie zgaduje tego z danych.
+   Zbiór regresyjny przy `task = "classification"` zrobi z każdej unikalnej wartości
+   `target` osobną klasę. Jeden przebieg `testing.py` to jedno zadanie. HYPER i MARGIN nie
+   mają wariantów regresyjnych (dokument projektu uzasadnia dlaczego).
 
 2. **Liczba klas a tablice IB.** Rekurencja odwiedza rzędu `C(T+l, l)` stanów:
 
@@ -582,10 +742,12 @@ wcześniejszą wersję generatora (np. `CATEGORICAL_FEATURES`), której w
    | 51 | 4 | ~341 tys. | szybko |
    | 51 | 5 | ~3,8 mln | do zrobienia |
 
-   Przy `T = 501` IB pruning działa więc tylko dla 2 i 3 klas. Dla zbiorów z 4+ klasami
-   (`multi_small`, `shuttle`, `multi_many_classes`, …) metoda zostanie **pominięta
-   z ostrzeżeniem** (`pomijam IB_pi98: brak tablicy …`), a reszta benchmarku pójdzie dalej.
-   Żeby badać więcej klas, trzeba zmniejszyć `n_trees` albo zmienić algorytm liczenia tablicy.
+   Przy `T = 501` IB pruning z tablicą dla wszystkich klas działa więc tylko dla 2 i 3 klas
+   (HYPER i `own` mają ten sam limit). Dla zbiorów z 4+ klasami (`multi_small`, `shuttle`,
+   `multi_many_classes`, …) metoda zostanie **pominięta z ostrzeżeniem**
+   (`pomijam IB_pi98: brak tablicy …`), a reszta benchmarku pójdzie dalej.
+   Żeby badać więcej klas, ustaw w bloku metody `multiclass = "pair"` (rozdz. 2d) albo
+   zmniejsz `n_trees`.
 
 3. **SUSY ma 5 mln wierszy.** Zbiór testowy to 1,5 mln próbek × 501 drzew × kilka metod × kilka
    seedów. Najpierw ustaw jeden seed i sprawdź czas.
@@ -632,7 +794,9 @@ i uśrednia prawdopodobieństwa. Żeby przerwać w połowie, musimy sami iterowa
 głosy są wymienialne. Drzewa lasu losowego są uczone niezależnie, więc ich kolejność jest
 losowa. Sortowanie drzew np. po trafności złamałoby to założenie, a `pi` przestałoby
 oznaczać to, co ma oznaczać.
-Opcja `order = "random"` w bloku `ib_pruning` (z opcjonalnym `seed`) daje każdej próbce
+Opcja `order = "shuffled"` losuje jedną permutację lasu w `fit` i nic nie kosztuje przy
+predykcji (rozdz. 2d).
+Opcja `order = "random"` w bloku metody z wczesnym stopem (z opcjonalnym `seed`) daje każdej próbce
 własną losową permutację drzew, więc kolejność jest losowa niezależnie od tego, jak las je
 zbudował. W trybie batch próbki pytające w danym kroku to samo drzewo są grupowane w jedno
 wywołanie `predict`, ale wywołań jest dużo więcej niż przy `"fixed"`, więc batch jest
@@ -774,6 +938,8 @@ historycznych.
 | uruchomić benchmark | `cd src && python testing.py` |
 | zmienić zbiory / las / metody | edytuj [config.toml](config.toml) |
 | nową tablicę IB | `from generate_table_IB import generuj_tablice; generuj_tablice(T, l, pi)` (z `src/`) |
+| badać zbiory z 4+ klasami | `multiclass = "pair"` w blokach `ib_pruning`, `hyper`, `own` |
+| uruchomić regresję | `task = "regression"`, `datasets = ["generated/regression"]`, nowy `out_dir` |
 | sprawdzić, czy IB dotrzymuje `pi` | kolumna `agree_full` i komunikat na końcu `testing.py` |
 | zobaczyć, ile drzew trzeba | `trees_mean`, `trees_frac`; rozkład w `runs/*.npz` → `N_used_*` |
 | wczytać wyniki zbiorcze | `pd.read_csv(f, header=[0, 1], index_col=[0, 1])` |

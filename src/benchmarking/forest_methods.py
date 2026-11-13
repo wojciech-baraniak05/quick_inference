@@ -5,10 +5,10 @@ from typing import Any, Self
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestRegressor
 
-from methods import FullVoting, InferenceMethod, SklearnRF
-from methods.base import FloatArray, IntArray, Labels, Prediction
+from methods import FullAveraging, FullVoting, InferenceMethod, SklearnRF, SklearnRFReg
+from methods.base import FloatArray, Forest, IntArray, Labels, Prediction, Task
 
 from .modes import Mode, check_modes
 
@@ -18,16 +18,20 @@ RunResult = tuple[Labels, IntArray, FloatArray]     # (Y_pred, N_used, times), w
 class methods_rf:
     """Metody inferencji dla jednego wytrenowanego lasu; run() zbiera ich wyniki w macierze."""
 
-    def __init__(self, rf: RandomForestClassifier,
+    def __init__(self, rf: Forest,
                  methods: Iterable[InferenceMethod] | None = None,
                  X_train: ArrayLike | None = None, y_train: ArrayLike | None = None) -> None:
         self.rf = rf
         self.X_train, self.y_train = X_train, y_train       # przekazywane do fit() każdej metody
-        self.classes: Labels = rf.classes_
+        regresja = isinstance(rf, RandomForestRegressor)
+        self.task: Task = "regression" if regresja else "classification"
+        self.classes: Labels = np.empty(0) if regresja else rf.classes_    # regresja: bez klas
         self.T = len(rf.estimators_)
-        self.l = len(rf.classes_)
+        self.l = len(self.classes)
         self.methods: list[InferenceMethod] = []
-        for m in (methods if methods is not None else [SklearnRF(), FullVoting()]):
+        if methods is None:
+            methods = [SklearnRFReg(), FullAveraging()] if regresja else [SklearnRF(), FullVoting()]
+        for m in methods:
             self.add_method(m)
         self.Y_pred: dict[Mode, Labels] = {}
         self.N_used: dict[Mode, IntArray] = {}
@@ -55,7 +59,7 @@ class methods_rf:
 
     def run(self, X: NDArray[Any], mode: Mode = "batch", n_repeats: int = 1) -> RunResult:
         check_modes([mode])
-        Y = np.empty((len(self.methods), len(X)), dtype=self.classes.dtype)
+        Y = np.empty((len(self.methods), len(X)), dtype=self.classes.dtype)  # regresja: float64
         N = np.empty((len(self.methods), len(X)), dtype=int)
         times = np.empty(len(self.methods))
         for i, method in enumerate(self.methods):

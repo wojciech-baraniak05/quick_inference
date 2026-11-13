@@ -13,7 +13,9 @@ SEED: int = int(_config["seed"])
 
 # [benchmark]
 _bench = _config["benchmark"]
+TASK: str = _bench.get("task", "classification")    # "classification" | "regression"
 DATASETS: list[str] = list(_bench["datasets"])
+DROP_COLUMNS: list[str] = list(_bench.get("drop_columns", []))  # kolumny, które nie są cechami
 OUT_DIR: str = _bench["out_dir"]
 MODES: tuple[str, ...] = tuple(_bench["modes"])
 SEEDS: list[int] = [int(s) for s in _bench["seeds"]]

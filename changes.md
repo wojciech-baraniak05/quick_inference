@@ -1,3 +1,72 @@
+# Changes: own methods, regression variants, pairwise multi-class rule
+
+Adds what the project's design document ("Projekt zespołowy: laboratorium 2") describes
+beyond the four literature methods. The existing methods are unchanged: with their default
+parameters IB pruning, HYPER, GLEE, the margin method, `full_voting` and `rf_sklearn` return
+the same predictions and tree counts as before (24 method runs compared, batch and online).
+
+## New methods
+
+| `type` | Class | What it is |
+|---|---|---|
+| `own` | `Own` ([own.py](src/methods/own.py)) | HYPER with the prior `lam * P_OOB + (1 - lam) * P_uniform`; `glee = true` stops when HYPER or GLEE allows it |
+| `full_averaging` | `FullAveraging` ([regression.py](src/methods/regression.py)) | mean of all trees of a regression forest (reference) |
+| `ib_reg` | `IBRegression` | regression IB pruning: Student-t predictive interval |
+| `glee_reg` | `GleeRegression` | regression GLEE: normal interval with finite population correction |
+| `own_reg` | `OwnRegression` ([own.py](src/methods/own.py)) | regression IB pruning with a prior on the output variance, estimated from out-of-bag predictions |
+
+## New options on existing methods
+
+- `multiclass = "pair"` on `ib_pruning`, `hyper` and `own`: the stopping rule compares the
+  leader with the runner-up on binary tables, for any number of classes. The default
+  `"full"` is the previous behaviour.
+- `order = "shuffled"`: one random permutation of the forest drawn in `fit`. `hyper` and
+  `glee` now accept `order` and `seed` like `ib_pruning` did.
+
+## Benchmark
+
+- `[benchmark] task = "classification" | "regression"` (default classification) selects the
+  forest type. Method blocks of the other task are skipped.
+- Regression results have `mae`, `rmse`, `r2`, and `agree_*` / `mad_*` / `maxdiff_*` against
+  `rf_sklearn` and `full_averaging`; `agree_*` counts predictions within the method's
+  `delta` of the reference.
+- `[benchmark] drop_columns` lists dataset columns that are not features (default
+  `["year", "CO"]`, the extra columns of `gas_turbine`).
+
+## Decisions the document leaves open
+
+- **Binary prior for the pairwise HYPER rule.** Built per leading class from the
+  out-of-bag samples in which that class is among the top two
+  ([implementacja.md, 5.5](implementacja.md)). For two classes and odd `T` it reproduces
+  the full table's predictions exactly.
+- **`glee_reg` default `t_min`.** The document only requires `t_min >= 2`. The default is
+  the classification GLEE's 15 / 30 / 45, because with `t_min = 2` the normal quantile lets
+  the rule stop after 2–3 trees (`agree_full` 0.80–0.94 at `pi = 0.98` in the trial runs).
+- **`delta_std`.** An alternative to the absolute `delta`, in standard deviations of
+  `y_train`, so one config block makes sense across datasets with different target scales.
+- **`own_reg` default `nu0 = 5`.** The document tunes it on a validation set; that tuning
+  is not implemented.
+
+## Not implemented from the document
+
+Calibrating `pi` / `k` to a common disagreement rate on a validation set, the statistical
+tests, the Numba tree evaluator, and ensembles other than scikit-learn random forests
+(bagging, IVoting).
+
+## Verification
+
+- Each stopping rule checked against a direct evaluation of the document's formulas on
+  per-tree outputs: (2) for `ib_reg`, (6) for `glee_reg`, (10)–(11) for `own_reg`
+  (identical tree counts, predictions equal to rounding).
+- `own` with `lam = 1` gives HYPER's table; with `lam = 0` it gives IB pruning's
+  predictions and tree counts; with `glee = true` the tree count per sample equals the
+  minimum of HYPER's and GLEE's.
+- Batch and online predictions agree for every new method.
+- `testing.py` run end to end for binary, 5-class and regression data (501 trees).
+- No unit tests were added, and `mypy` was not run (it is not installed here).
+
+---
+
 # Changes: type hints, short docstrings, `implementacja.md`
 
 No behaviour change: every method returns the same predictions and tree counts as before.

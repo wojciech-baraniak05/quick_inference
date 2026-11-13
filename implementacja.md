@@ -12,7 +12,11 @@ Podział dokumentacji:
 - ten plik: szczegóły kodu, w kolejności modułów.
 
 Oznaczenia używane w kodzie i poniżej: `T` to liczba drzew lasu, `l` liczba klas, `pi`
-poziom ufności, `t = (t_1, …, t_l)` głosy zebrane do tej pory, `prog` tablica progów.
+poziom ufności, `t = (t_1, …, t_l)` głosy zebrane do tej pory, `prog` tablica progów,
+a w regresji `delta` tolerancja i `t` liczba odpytanych drzew.
+
+Rozdziały 1–10 opisują klasyfikację. Regresja (las `RandomForestRegressor`) jest
+w rozdz. 11, metody własne projektu w rozdz. 12.
 
 ---
 
@@ -28,7 +32,10 @@ Aliasy typów zdefiniowane na górze `base.py` i używane w całym kodzie:
 | `BoolArray` | maska logiczna |
 | `Labels` | etykiety klas w typie `rf.classes_` (dowolny dtype) |
 | `Prediction` | `(y_pred, n_used)`: etykiety i liczba odpytanych drzew dla każdej próbki |
-| `Order` | `"fixed"` albo `"random"` |
+| `Order` | `"fixed"`, `"shuffled"` albo `"random"` (rozdz. 3) |
+| `Multiclass` | `"full"` albo `"pair"`: tablica dla wszystkich klas albo dla pary lider – druga klasa |
+| `Task` | `"classification"` albo `"regression"` |
+| `Forest` | `RandomForestClassifier` albo `RandomForestRegressor` |
 
 Inne aliasy są przy kodzie, który ich używa: `Ranking` (`margin.py`), `Mode`
 (`benchmarking/modes.py`), `MethodSpec` (`registry.py`), `RunResult`
@@ -50,6 +57,9 @@ predict_one(x)   -> (y, n_used)          x: (1, n_cech), jedna próbka
 - `pi` jest atrybutem klasy bazowej o wartości `None`. Metody z poziomem ufności (IB,
   HYPER, GLEE) ustawiają go w konstruktorze, a benchmark po tym atrybucie rozpoznaje,
   które metody sprawdzać względem `pi`.
+- `task` (`"classification"`, w klasach z rozdz. 11 `"regression"`) mówi, do jakiego lasu
+  metoda pasuje. `fit` metody klasyfikacyjnej na lesie regresyjnym (i odwrotnie) zgłasza
+  `ValueError`. `delta` to tolerancja metod regresyjnych, `None` dla pozostałych.
 - Drzewa głosują **indeksem klasy** (`0..l-1`), nie etykietą: `RandomForestClassifier`
   koduje `y` wewnętrznie. Zamiana na etykietę to `self.classes[votes.argmax()]` na końcu
   predykcji. Remis rozstrzyga `argmax`, czyli wygrywa klasa o niższym indeksie.
@@ -97,6 +107,10 @@ Skutki dla reszty kodu:
 `SklearnRF` (`rf_sklearn`) celowo nie używa `FastTree`: to pomiar oryginalnego
 `rf.predict`.
 
+`FastRegTree` to to samo dla drzewa regresyjnego: `leaf_value[liść]` jest wyjściem drzewa
+(`tree_.value[:, 0, 0]`), a `predict(X)` zwraca wartości `float64`. `fast_reg_trees(rf)`
+korzysta z tego samego słownika co `fast_trees(rf)`.
+
 ---
 
 ## 3. Pętle wczesnego stopu (`SequentialPruning`)
@@ -143,6 +157,33 @@ Koszty, o których warto wiedzieć:
 `self.rng` jest tworzony od nowa w `fit()` z `seed`. Jest jeden na metodę i zużywany
 przez kolejne wywołania predykcji, więc wyniki w kolejności `random` zależą od tego, ile
 predykcji wykonano wcześniej (np. od kolejności scenariuszy i od `n_repeats`).
+
+### 3.5. Kolejność `shuffled`
+
+Jedna losowa permutacja lasu, wylosowana w `fit()` z `seed` i wspólna dla wszystkich
+próbek: `self.trees` staje się nową listą w tej kolejności (lista z `fast_trees(rf)`,
+dzielona z innymi metodami, zostaje bez zmian). Predykcja idzie potem tymi samymi pętlami
+co `fixed`, więc nie ma kosztów z rozdz. 3.2, a wynik nie zależy od liczby wcześniejszych
+predykcji. To kolejność z dokumentu projektu („losowa permutacja zespołu przy ustalonym
+ziarnie”). Kalibracja na danych out-of-bag (HYPER, metody własne) nie zależy od kolejności.
+
+Kolejność wybiera parametr `order` (z opcjonalnym `seed`) w IB, HYPER, GLEE, metodach
+własnych i metodach regresyjnych. Domyślne nazwy dostają przyrostek `_shuf` albo `_rand`
+(`ORDER_SUFFIX`).
+
+### 3.6. Reguła dla pary lider – druga klasa
+
+Dokument projektu rozszerza metody na wiele klas przez porównanie klasy prowadzącej
+z drugą w kolejności na **tablicach binarnych**: warunek sprawdza parę `(t_1, t_2)`
+dwóch największych liczb głosów, a tablica zakłada, że pozostałe `T - t_1 - t_2` głosów
+trafi do tej pary (nie mniej, niż zostało naprawdę). `czy_stop_para(votes, prog)` w
+`base.py` czyta `prog[t_2]` = najmniejsze `t_1`, przy którym wolno przerwać. To
+przybliżenie: nie uwzględnia, że wygrać może jeszcze klasa dalsza niż druga.
+
+- GLEE działa tak od początku (rozdz. 6.1),
+- IB pruning i HYPER (oraz metoda własna) mają parametr `multiclass`: `"full"` (domyślnie)
+  to dotychczasowa tablica dla wszystkich klas naraz, `"pair"` to reguła pary (rozdz. 4.4
+  i 5.5). Domyślne nazwy dostają przyrostek `_pair`.
 
 ---
 
@@ -206,6 +247,14 @@ rozmiarze dzielą tę samą tablicę w pamięci. Nie należy jej modyfikować.
 
 `pi_tag(pi)` zamienia poziom ufności na tekst do nazw plików i metod: `0.98 -> "98"`,
 `0.995 -> "99.5"`. Używają go też HYPER i GLEE do domyślnych nazw.
+
+### 4.4. `multiclass = "pair"`
+
+`IBPruning(pi=0.98, multiclass="pair")` przy każdej liczbie klas wczytuje tablicę binarną
+`T{T}_L2_pi98.npz` i stosuje regułę pary z rozdz. 3.6. Tablica binarna ma już potrzebny
+format (`prog[t_2]` = najmniejsze `t_1`), więc nie trzeba liczyć nic nowego, a metoda
+działa dla zbiorów, dla których tablica `l`-klasowa jest niewykonalna (4 i więcej klas
+przy 501 drzewach). Dla dwóch klas `"pair"` i `"full"` dają to samo.
 
 ---
 
@@ -309,7 +358,41 @@ tablica HYPER nie jest identyczna z tablicą IB w komórkach bliskich progu.
   (`None` = wszystkie).
 - `expected_trees(n_sim, seed)`: oczekiwana liczba odpytanych drzew, oszacowana metodą
   Monte Carlo bez danych testowych. Losuje skład urny z `prior`, ustawia głosy w losowej
-  kolejności i liczy je do pierwszego stopu.
+  kolejności i liczy je do pierwszego stopu. Tylko dla `multiclass = "full"`.
+- `Hyper._prior(prior)` i `Hyper._prog(prog)` to miejsca, w których podklasa zmienia
+  a priori i tablicę (metoda własna, rozdz. 12). W `Hyper` nic nie robią.
+
+### 5.5. `multiclass = "pair"`: tablice binarne dla każdej klasy prowadzącej
+
+Reguła pary z rozdz. 3.6 wymaga binarnego a priori. Artykuł go nie definiuje dla wielu
+klas, więc poniższe jest założeniem projektu.
+
+`prior_par(votes, T, smooth)` zwraca tablicę `(l, T + 1)`: `prior[c, T_c]` to rozkład
+liczby głosów klasy `c` w urnie złożonej tylko z niej i jej rywala (`T_c + T_rywala = T`).
+
+1. Dla każdej próbki out-of-bag brane są dwie klasy o największej liczbie głosów,
+   a ich głosy są skalowane do `T` tą samą metodą największych reszt co w rozdz. 5.2
+   (`sklad_urny`).
+2. Próbka trafia do histogramu **obu** klas pary: lidera z jego `T_c` i drugiej klasy z jej
+   `T_c`. Przy więcej niż dwóch klasach druga klasa bez żadnego głosu jest wybrana
+   przypadkiem (remis zer), więc wtedy do histogramu trafia tylko lider.
+3. Każdy wiersz jest wygładzany oknem `smooth` i normalizowany. Klasa, która nigdy nie
+   była w pierwszej dwójce, dostaje rozkład jednostajny (czyli regułę IB).
+
+`tablica_par(prior, pi)` liczy dla każdej klasy tablicę binarną przez `tablica_hyper`
+i zwraca `prog[c, t_2]` = najmniejsza liczba głosów lidera `c` przy `t_2` głosach drugiej
+klasy. Dwa szczegóły:
+
+- klasa `c` jest podawana do `tablica_hyper` jako **druga** klasa urny binarnej
+  (`p[::-1]`, potem `[1]`), więc remis w pełnym zespole liczy się jako jej przegrana.
+  Zgadza się to z definicją z dokumentu („ściśle więcej głosów”) i jest ostrożne przy
+  parzystym `T`,
+- próg jest podnoszony do co najmniej `t_2 + 1`: przy remisie w głosach lider nie jest
+  wyznaczony, więc stop wymaga ścisłej przewagi.
+
+Odczyt (`czy_stop_hyper_para`): lider to `argmax` głosów, `t_2` to druga największa liczba
+głosów. Dla dwóch klas i nieparzystego `T` wynik jest identyczny z `multiclass = "full"`.
+Nie ma tu limitu `MAX_CELLS`: koszt to `l` tablic binarnych.
 
 ---
 
@@ -467,6 +550,11 @@ nieobciążone głosy lasu bez osobnego zbioru walidacyjnego. Korzystają z tego
   zwraca `oob` (pozycje **w `wiersze`**, nie w `X_train`, których drzewo nie widziało)
   i przewidziane dla nich indeksy klas.
 - `glosy_oob` sumuje te predykcje do macierzy głosów `(n, l)`.
+- Dla lasu regresyjnego `predykcje_oob` zwraca wyjścia drzew zamiast indeksów klas,
+  a `wariancje_oob` liczy z nich dla każdej próbki uczącej wariancję (z `n - 1`
+  w mianowniku) wyjść drzew, które jej nie widziały. Próbki z mniej niż dwoma takimi
+  drzewami są pomijane. Średnia i suma kwadratów są aktualizowane drzewo po drzewie, więc
+  macierz `T × n` nie powstaje. Korzysta z tego `OwnRegression` (rozdz. 12.2).
 
 Scikit-learn nie przechowuje indeksów bootstrapu, tylko odtwarza je z ziarna każdego
 drzewa. Kod używa prywatnego `rf._get_estimators_indices()` (generator, nie trzyma
@@ -517,6 +605,23 @@ z metodami, które odpytują drzewa po kolei, jest uczciwe.
 - `results(mode)` liczy metryki raz na scenariusz i zwraca kopię zapamiętanej tabeli.
   Ponowne `run()` unieważnia zapamiętaną tabelę.
 
+### 9.3a. Regresja w benchmarku
+
+`methods_rf` rozpoznaje zadanie po typie lasu (`task`). Dla `RandomForestRegressor`
+`classes` jest pustą tablicą, `l = 0`, a `Y_pred` ma typ `float64`. Metodą odniesienia
+dla kolumn `*_full` jest `full_averaging` (`benchmark.REF_FULL_REG`) zamiast `full_voting`.
+
+Kolumny jakości w regresji: `mae`, `rmse`, `r2`. Względem metod odniesienia:
+
+- `agree_full`, `agree_rf`: odsetek próbek, dla których `|y - y_odniesienia| <= delta`
+  tej metody. To dopełnienie „odsetka przekroczeń tolerancji” z dokumentu, więc tak jak
+  w klasyfikacji porównuje się je z `pi`. Metody bez tolerancji (`rf_sklearn`,
+  `full_averaging`) muszą dać ten sam wynik z dokładnością arytmetyki (`np.isclose`),
+- `mad_*`, `maxdiff_*`: średnia i największa różnica bezwzględna.
+
+`benchmark.deltas` (nazwa metody → `delta` po `fit`) trafia też do metadanych przebiegu
+jako `deltas`. Jest potrzebne, bo `delta_std` daje w każdym przebiegu inną tolerancję.
+
 ### 9.4. `benchmark_suite`: wiele zbiorów i powtórzeń
 
 - Każdy benchmark jest identyfikowany wartościami kluczy z metadanych (domyślnie
@@ -550,11 +655,155 @@ Formaty plików wynikowych: [instrukcja.md, rozdz. 6.3](instrukcja.md).
   z komunikatem konstruktora.
 - `rf_sklearn` nie jest w `METHOD_TYPES`: włącza się przez
   `benchmark.sklearn_soft_voting` i wtedy trafia na początek listy metod.
+- `build_methods(specs, sklearn_soft_voting, task)` tworzy tylko bloki, których klasa ma
+  `task` równe podanemu (`benchmark.task` z configu). Jeden `config.toml` może więc
+  zawierać metody klasyfikacyjne i regresyjne naraz. Dla regresji `rf_sklearn` to
+  `SklearnRFReg`.
 - `build_methods` zwraca **nowe, niedopasowane** instancje. `testing.py` woła je dla
   każdego lasu, bo `fit` dobiera metodę do konkretnego lasu.
 - Nazwy metod muszą być różne; dwa bloki o tych samych parametrach wymagają różnych
   `name`.
 
 `src/config.py` czyta `config.toml` przy imporcie i wystawia wartości jako stałe modułu.
-Brak klucza w pliku daje `KeyError` przy imporcie. Brak `max_depth` w `[forest]` jest
-dozwolony i oznacza drzewa bez limitu głębokości.
+Brak klucza w pliku daje `KeyError` przy imporcie. Wyjątki: brak `max_depth` w `[forest]`
+oznacza drzewa bez limitu głębokości, brak `task` w `[benchmark]` oznacza klasyfikację,
+a brak `drop_columns` pustą listę.
+
+---
+
+## 11. Regresja (`src/methods/regression.py`)
+
+Warianty regresyjne z dokumentu projektu (algorytmy 2 i 5). Las to
+`RandomForestRegressor`, predykcją pełnego zespołu jest średnia wyjść drzew `y_T`,
+a predykcja po `t` drzewach `y_t` jest zgodna z pełną, gdy `|y_t - y_T| <= delta`.
+
+### 11.1. Klasy
+
+- `RegressionMethod`: baza. `fit` wymaga lasu regresyjnego i ustawia `trees` na listę
+  `FastRegTree`. Kontrakt predykcji jest ten sam co w rozdz. 1, tylko `y_pred` to liczby.
+- `SklearnRFReg` (`rf_sklearn`): oryginalne `rf.predict`.
+- `FullAveraging` (`full_averaging`): średnia wszystkich drzew, liczona drzewo po drzewie.
+  Odpowiednik `full_voting`: różnica czasu względem metod z wczesnym stopem pokazuje zysk
+  z przerywania, a nie różnice implementacji.
+- `SequentialRegression`: wspólne pętle wczesnego stopu. Podklasa podaje tylko tablicę
+  mnożników `_mnoznik()`.
+- `IBRegression` (`ib_reg`), `GleeRegression` (`glee_reg`) tutaj, `OwnRegression`
+  (`own_reg`) w `own.py` (rozdz. 12.2).
+
+### 11.2. Warunek stopu jako próg sumy kwadratów
+
+Wszystkie trzy metody mają warunek postaci
+
+```
+c[t] * sigma_t <= delta
+sigma_t^2 = (nu0 * sigma0_2 + S_t) / (nu0 + t - 1)
+```
+
+gdzie `S_t` to suma kwadratów odchyleń `t` dotychczasowych wyjść od ich średniej. Dla
+`nu0 = 0` (IB, GLEE) `sigma_t` to zwykłe odchylenie standardowe `s_t` z `t - 1`
+w mianowniku; `nu0 > 0` to a priori metody własnej. Warunek da się przekształcić tak, żeby
+po lewej zostało samo `S_t`:
+
+```
+S_t <= prog_S[t] = (delta / c[t])^2 * (nu0 + t - 1) - nu0 * sigma0_2
+```
+
+`prog_sumy_kwadratow` liczy tę tablicę raz w `fit()`. W pętli zostaje aktualizacja
+średniej i `S_t` (algorytm Welforda, jak w algorytmie 2 dokumentu) oraz jedno porównanie,
+bez pierwiastka i dzielenia. Konwencje tablicy:
+
+- `prog_S[t] = -1`: po `t` drzewach nie wolno przerwać (`t < t_min` albo mnożnik
+  nieskończony). `S_t >= 0`, więc warunek nigdy nie zachodzi. Ważne przy identycznych
+  wyjściach pierwszych drzew: `S_t = 0` nie może zatrzymać próbki przed `t_min`,
+- `prog_S[T] = inf`: po wszystkich drzewach zawsze koniec, więc każda próbka dostaje
+  predykcję i `n_used <= T`,
+- ujemny próg przy `nu0 > 0` oznacza, że samo a priori wyklucza stop po tylu drzewach.
+
+Pętle `predict_batch` (kolejność `fixed` i `shuffled`), `_predict_batch_random`
+i `predict_one` mają tę samą budowę co w `SequentialPruning` (rozdz. 3), ze stanem
+`(srednia, S)` zamiast macierzy głosów.
+
+### 11.3. Mnożniki
+
+- `mnoznik_studenta(T, pi, t_min, nu0)`: `c[t] = q * sqrt((T - t) / (T * t))`, gdzie `q`
+  to kwantyl rzędu `(1 + pi) / 2` rozkładu t-Studenta o `nu0 + t - 1` stopniach swobody
+  (`scipy.special.stdtrit`). Dla `nu0 = 0` to wzór (2) dokumentu: przedział predykcyjny
+  dla średniej pozostałych `T - t` wyjść, przeliczony na różnicę `y_T - y_t`. Wymaga
+  `t >= 2`.
+- `mnoznik_normalny(T, pi, t_min, fpc)`: `c[t] = z * rho[t] / sqrt(t)` z kwantylem
+  rozkładu normalnego i poprawką na populację skończoną `rho[t]` (`poprawka_fpc`, ta sama
+  co w klasyfikacyjnym GLEE). To wzór (6) dokumentu.
+
+Oba mnożniki zależą tylko od `T`, `pi` i parametrów metody, nie od `delta` ani od danych.
+
+### 11.4. Parametry
+
+- `delta` albo `delta_std` (dokładnie jedno). `delta` to tolerancja w jednostkach zmiennej
+  celu, tak jak w dokumencie. `delta_std` podaje ją w odchyleniach standardowych `y_train`
+  i jest przeliczane na `delta` w `fit()`; istnieje po to, żeby jeden blok configu miał
+  sens na zbiorach o różnej skali celu. Po `fit` zawsze obowiązuje `self.delta`.
+- `t_min`: najmniejsza liczba drzew przed stopem. `IBRegression`: domyślnie 2 (minimum
+  potrzebne do `s_t`). `GleeRegression`: domyślnie `None`, czyli wartość z klasyfikacyjnego
+  GLEE (`min_glosow`: 15, 30 albo 45). Powód: kwantyl normalny nie rośnie przy małym `t`
+  tak jak kwantyl t-Studenta, więc z `t_min = 2` metoda staje po 2–3 drzewach, gdy ich
+  wyjścia są przypadkiem bliskie (w próbnym przebiegu `agree_full` 0,80–0,94 przy
+  `pi = 0,98`). Dokument wymaga tylko `t_min >= 2`; wartość domyślna jest decyzją kodu.
+- `fpc` (`GleeRegression`): poprawka na populację skończoną.
+- `order`, `seed`: jak w rozdz. 3.
+- Domyślne nazwy: `IBREG_pi98_d5` (z `delta = 5`), `GLEEREG_pi98_ds0.05` (z `delta_std`).
+- `pi = 1` daje nieskończony kwantyl, czyli metodę, która nigdy nie przerywa.
+
+Założenie obu wariantów: wyjścia drzew dla ustalonej próbki są w przybliżeniu niezależne
+i normalne. `pi` nie jest gwarancją dla danych, więc `agree_full` trzeba mierzyć.
+
+---
+
+## 12. Metody własne (`src/methods/own.py`)
+
+### 12.1. `Own`: HYPER z a priori zmieszanym z jednostajnym
+
+Klasa dziedziczy po `Hyper` i zmienia dwa miejsca (`_prior`, `_prog`); model urny,
+rekurencja i odczyt tablicy zostają bez zmian.
+
+**A priori** (wzór (9) dokumentu):
+
+```
+P_lam(T) = lam * P_OOB(T) + (1 - lam) * P_jednostajny(T)
+```
+
+`prior_jednostajny(T, l, para)` daje rozkład jednostajny na wszystkich składach urny
+o sumie `T` (dla dwóch klas `1 / (T + 1)`), a w trybie pary jednostajny w każdym wierszu.
+`lam = 1` to HYPER (tablica identyczna), `lam = 0` to IB pruning: tablica jest taka sama
+jak z pliku we wszystkich komórkach, do których głosowanie może dojść (pozostałe HYPER
+zostawia z wartością 0, IB z `T + 1`; żadnej nie da się odczytać). Uwaga z rozdz. 5.3
+o remisach przy parzystym `T` dotyczy też `lam = 0`.
+
+**Wariant rozszerzony** (`glee=True`): stop, gdy pozwala reguła HYPER **lub** GLEE.
+`dolacz_glee(prog, prog_glee, para)` łączy tablice w `fit()`: obie mówią „stop, gdy głosy
+lidera >= próg”, więc alternatywa to mniejszy z dwóch progów w każdej komórce. Tablica
+GLEE jest indeksowana głosami drugiej klasy (`t_2`), czyli największą liczbą głosów poza
+liderem; w formacie `tablica_hyper` jest to maksimum indeksów komórki. Predykcja nie
+zmienia się i nie ma dodatkowego kosztu. `pi_glee` (domyślnie `pi`) to poziom ufności
+reguły GLEE, `min_votes` jak w `Glee`.
+
+Domyślne nazwy: `OWN_lam0.5_pi98`, z przyrostkami `_glee`, `_pair`, `_shuf`/`_rand`.
+
+### 12.2. `OwnRegression`: IB z a priori wariancji wyjść
+
+Regresyjny IB szacuje rozrzut wyjść tylko z `t` odpytanych drzew. Metoda własna dokłada
+wiedzę z danych uczących (wzory (10)–(11) dokumentu):
+
+- `sigma0_2`: mediana po próbkach uczących wariancji wyjść drzew out-of-bag
+  (`wariancje_oob`, rozdz. 8), liczona w `fit(rf, X_train)`,
+- `nu0`: siła a priori w pseudoobserwacjach (skalowany odwrotny rozkład chi-kwadrat).
+
+Rozrzut w warunku stopu to wariancja ważona z rozdz. 11.2, a mnożnik to kwantyl
+t-Studenta o `nu0 + t - 1` stopniach swobody. Cała metoda to więc `SequentialRegression`
+z ustawionymi `nu0`, `sigma0_2` i `_mnoznik()`; pętle są wspólne.
+
+- `nu0 = 0` to dokładnie `IBRegression` (i wtedy `fit` nie potrzebuje `X_train`).
+- `t_min` jest domyślnie 1: przy `nu0 > 0` rozrzut nie spada do zera, więc stop jest
+  możliwy już po pierwszym drzewie, jeśli `c[1] * sigma0 <= delta`.
+- `n_prior`: ile losowych próbek uczących użyć do `sigma0_2` (`None` = wszystkie).
+- Tablica mnożników nie zależy od danych; po każdym treningu lasu liczona jest od nowa
+  tylko liczba `sigma0_2`.

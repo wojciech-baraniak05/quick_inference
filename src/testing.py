@@ -11,14 +11,15 @@ from methods import build_methods
 
 # %%
 MODES = check_modes(cfg.MODES)
-REFS = (benchmark.REF_RF, benchmark.REF_FULL)
+REFS = benchmark.REFS
 OUT_DIR = DATA_DIR / cfg.OUT_DIR
-nazwy = [m.name for m in build_methods(cfg.METHODS, cfg.SKLEARN_SOFT_VOTING)]  # walidacja configu
+# walidacja configu; bloki [[methods]] innego zadania niż cfg.TASK są pomijane
+nazwy = [m.name for m in build_methods(cfg.METHODS, cfg.SKLEARN_SOFT_VOTING, cfg.TASK)]
 datasets = znajdz_zbiory(cfg.DATASETS)
 
-print(f"{len(datasets)} zbiorów, seedy {cfg.SEEDS}, scenariusze {list(MODES)}")
+print(f"zadanie: {cfg.TASK}, {len(datasets)} zbiorów, seedy {cfg.SEEDS}, scenariusze {list(MODES)}")
 print(f"las: {cfg.N_TREES} drzew, max_depth={cfg.MAX_DEPTH}, "
-      f"soft voting sklearn: {'tak' if cfg.SKLEARN_SOFT_VOTING else 'nie'}")
+      f"rf.predict ze sklearn: {'tak' if cfg.SKLEARN_SOFT_VOTING else 'nie'}")
 print(f"metody: {nazwy}")
 
 # %%
@@ -26,18 +27,18 @@ print(f"metody: {nazwy}")
 suite = benchmark_suite(keys=("dataset", "seed"), out_dir=OUT_DIR)
 
 for plik in datasets:
-    X, y = wczytaj(plik)
+    X, y = wczytaj(plik, cfg.DROP_COLUMNS)
 
     for seed in cfg.SEEDS:
         start = time.perf_counter()
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=cfg.TEST_SIZE, random_state=seed)
-        rf = train_forest(X_train, y_train, cfg.N_TREES, cfg.MAX_DEPTH, seed)
+        rf = train_forest(X_train, y_train, cfg.N_TREES, cfg.MAX_DEPTH, seed, cfg.TASK)
 
         # nowe instancje metod dla każdego lasu (fit dobiera np. tablicę IB do T i l,
-        # a HYPER i MARGIN kalibrują się na głosach out-of-bag danych uczących)
+        # a HYPER, MARGIN i metody własne kalibrują się na predykcjach out-of-bag)
         m = methods_rf(rf, methods=[], X_train=X_train, y_train=y_train)
-        for method in build_methods(cfg.METHODS, cfg.SKLEARN_SOFT_VOTING):
+        for method in build_methods(cfg.METHODS, cfg.SKLEARN_SOFT_VOTING, cfg.TASK):
             try:
                 m.add_method(method)
             except (ValueError, FileNotFoundError) as e:
@@ -47,7 +48,7 @@ for plik in datasets:
             break
 
         b = benchmark(m, X_test, y_test,
-                      metadata={"dataset": plik.stem, "seed": seed,
+                      metadata={"dataset": plik.stem, "seed": seed, "task": cfg.TASK,
                                 "n_trees": cfg.N_TREES, "max_depth": cfg.MAX_DEPTH,
                                 "sklearn_soft_voting": cfg.SKLEARN_SOFT_VOTING},
                       n_online=cfg.N_ONLINE, n_repeats=cfg.N_REPEATS)
@@ -70,13 +71,14 @@ for plik in datasets:
 suite.summary()
 
 # %%
-# przebiegi, w których zgodność metody z wczesnym stopem (IB, HYPER, GLEE) z pełnym
-# głosowaniem spadła poniżej jej pi
+# przebiegi, w których zgodność metody z wczesnym stopem z pełnym lasem spadła poniżej jej pi
+# (klasyfikacja: ta sama klasa, regresja: różnica w tolerancji delta metody)
 poziomy = {name: pi for b in suite.runs for name, pi in b.pi_levels.items()}
 for mode in suite.modes:
     df = suite.results(mode)
     if "agree_full" not in df:
-        print("brak full_voting w benchmarku - pomijam sprawdzenie agree_full")
+        print("brak pełnego lasu (full_voting / full_averaging) w benchmarku - "
+              "pomijam sprawdzenie agree_full")
         break
     for name, pi in poziomy.items():
         agree = df.xs(name, level="method")["agree_full"]
