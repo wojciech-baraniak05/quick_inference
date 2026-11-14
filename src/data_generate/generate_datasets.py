@@ -25,7 +25,6 @@ def main() -> None:
         "binary_multi_features": dict(n_samples=50_000, n_features=100, n_informative=50, n_redundant=10, n_classes=2, flip_y=0.02),
         "noisy_labels": dict(n_samples=20_000, n_features=20, n_informative=10, n_redundant=4, n_classes=2, flip_y=0.25),
         "hard_nonlinear": dict(n_samples=20_000, n_features=10, n_informative=6, n_redundant=0, n_classes=2, n_clusters_per_class=6, class_sep=0.5),
-        "wide_p_gt_n": dict(n_samples=500, n_features=2_000, n_informative=15, n_redundant=5, n_classes=2),
         "rare_event": dict(n_samples=200_000, n_features=30, n_informative=10, n_redundant=5, n_classes=2, weights=[0.995, 0.005], flip_y=0.0),
         "collinear_unscaled": dict(n_samples=20_000, n_features=40, n_informative=8, n_redundant=24, n_repeated=4, n_classes=2, shift=None, scale=None),
         "outliers": dict(n_samples=20_000, n_features=20, n_informative=10, n_redundant=4, n_classes=2, flip_y=0.02),
@@ -39,7 +38,6 @@ def main() -> None:
         "multi_many_classes": dict(n_samples=50_000, n_features=30, n_informative=15, n_redundant=5, n_classes=20, n_clusters_per_class=1, flip_y=0.02),
         "multi_noisy_labels": dict(n_samples=20_000, n_features=20, n_informative=10, n_redundant=4, n_classes=5, flip_y=0.25),
         "multi_hard_nonlinear": dict(n_samples=20_000, n_features=10, n_informative=6, n_redundant=0, n_classes=4, n_clusters_per_class=6, class_sep=0.5),
-        "multi_wide_p_gt_n": dict(n_samples=500, n_features=2_000, n_informative=15, n_redundant=5, n_classes=4),
         "multi_rare_class": dict(n_samples=200_000, n_features=30, n_informative=10, n_redundant=5, n_classes=3, weights=[0.95, 0.045, 0.005], flip_y=0.0),
         "multi_collinear_unscaled": dict(n_samples=20_000, n_features=40, n_informative=8, n_redundant=24, n_repeated=4, n_classes=4, shift=None, scale=None),
         "multi_outliers": dict(n_samples=20_000, n_features=20, n_informative=10, n_redundant=4, n_classes=4, flip_y=0.02),
@@ -50,7 +48,6 @@ def main() -> None:
         "reg_check": dict(n_samples=100_000, n_features=5, n_informative=5, noise=1.0),
         "reg_multi_features": dict(n_samples=50_000, n_features=100, n_informative=50, noise=10.0),
         "reg_noisy": dict(n_samples=20_000, n_features=20, n_informative=10, noise=100.0),
-        "reg_wide_p_gt_n": dict(n_samples=500, n_features=2_000, n_informative=15, noise=5.0),
         # effective_rank: macierz cech niskiego rzędu -> silnie skorelowane cechy
         "reg_collinear": dict(n_samples=20_000, n_features=40, n_informative=8, effective_rank=5, tail_strength=0.1, noise=5.0),
         "reg_outliers": dict(n_samples=20_000, n_features=20, n_informative=10, noise=10.0),

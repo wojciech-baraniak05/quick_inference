@@ -542,14 +542,14 @@ Dostępne zbiory i ich liczba klas (liczba klas jest istotna, patrz rozdz. 8):
 
 | Zbiór | Klasy | Wiersze |
 |---|---|---|
-| `generated/binary/*` (11 plików) | 2 | 500 – 500 000 |
+| `generated/binary/*` (10 plików) | 2 | 1 000 – 500 000 |
 | `multi_check`, `multi_rare_class` | 3 | 100 000 / 200 000 |
-| `multi_small`, `multi_imbalanced`, `multi_hard_nonlinear`, `multi_wide_p_gt_n`, `multi_collinear_unscaled`, `multi_outliers` | 4 | 500 – 20 000 |
+| `multi_small`, `multi_imbalanced`, `multi_hard_nonlinear`, `multi_collinear_unscaled`, `multi_outliers` | 4 | 1 000 – 20 000 |
 | `multi_large`, `multi_multi_features`, `multi_noisy_labels` | 5 | 20 000 – 500 000 |
 | `multi_many_classes` | 20 | 50 000 |
 | `real_data/binary/susy` | 2 | **5 000 000** |
 | `real_data/multiclass/shuttle` | 7 | 58 000 |
-| `generated/regression/*` (9 plików), `real_data/regression/gas_turbine` | regresja | 500 – 500 000; wymagają `task = "regression"` |
+| `generated/regression/*` (8 plików), `real_data/regression/gas_turbine` | regresja | 1 000 – 500 000; wymagają `task = "regression"` |
 
 Folder `data/real_data/extra_time_data/` (MetroPT, WISDM, czujniki gazu) zawiera surowe pliki
 dodane ręcznie. Kod ich nie używa.
