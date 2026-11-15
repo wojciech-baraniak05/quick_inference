@@ -7,9 +7,9 @@ SUPPORTED_MODES: tuple[Mode, ...] = get_args(Mode)
 
 
 def check_modes(modes: Sequence[str]) -> tuple[Mode, ...]:
-    nieznane = [m for m in modes if m not in SUPPORTED_MODES]
-    if nieznane:
-        raise ValueError(f"nieznane modes {nieznane}, dozwolone: {SUPPORTED_MODES}")
+    unknown = [m for m in modes if m not in SUPPORTED_MODES]
+    if unknown:
+        raise ValueError(f"unknown modes {unknown}, expected from {SUPPORTED_MODES}")
     if not modes:
-        raise ValueError("nie wybrano żadnego scenariusza (modes)")
+        raise ValueError("no modes selected")
     return cast(tuple[Mode, ...], tuple(modes))

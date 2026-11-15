@@ -16,11 +16,25 @@ Labels = NDArray[Any]                   # etykiety klas w typie rf.classes_
 Prediction = tuple[Labels, IntArray]    # (y_pred, n_used) dla macierzy próbek
 Order = Literal["fixed", "shuffled", "random"]
 Multiclass = Literal["full", "pair"]    # tablica dla wszystkich klas | lider kontra druga klasa
+Calib = Literal["oob", "val"]           # dane kalibracji: uczące out-of-bag | zbiór walidacyjny
 Task = Literal["classification", "regression"]
 Forest = RandomForestClassifier | RandomForestRegressor
 
+# przyrostek nazwy metody; nieznaną kolejność odrzuca konstruktor (stąd .get w podklasach)
 ORDER_SUFFIX: dict[Order, str] = {"fixed": "", "shuffled": "_shuf", "random": "_rand"}
+CALIB_SUFFIX: dict[Calib, str] = {"oob": "", "val": "_val"}
 MULTICLASS: tuple[Multiclass, ...] = get_args(Multiclass)
+CALIBS: tuple[Calib, ...] = get_args(Calib)
+
+
+def check_calib(cls_name: str, calib: str) -> None:
+    if calib not in CALIBS:
+        raise ValueError(f"{cls_name}: calib must be one of {CALIBS}, got {calib!r}")
+
+
+def pi_tag(pi: float) -> str:
+    """Poziom ufności w procentach do nazw plików i metod: 0.98 -> '98', 0.995 -> '99.5'."""
+    return f"{round(pi * 100, 6):g}"
 
 
 def to_float32(X: ArrayLike) -> Features:
@@ -37,7 +51,7 @@ class FastTree:
     def __init__(self, estimator: DecisionTreeClassifier) -> None:
         tree = estimator.tree_
         if tree.value.shape[1] != 1:
-            raise ValueError("FastTree obsługuje tylko drzewa z jednym wyjściem (n_outputs=1)")
+            raise ValueError("FastTree supports only single-output trees (n_outputs=1)")
         self.apply = tree.apply
         self.leaf_class = tree.value[:, 0, :].argmax(axis=1)
 
@@ -55,7 +69,7 @@ class FastRegTree:
     def __init__(self, estimator: DecisionTreeRegressor) -> None:
         tree = estimator.tree_
         if tree.value.shape[1] != 1:
-            raise ValueError("FastRegTree obsługuje tylko drzewa z jednym wyjściem (n_outputs=1)")
+            raise ValueError("FastRegTree supports only single-output trees (n_outputs=1)")
         self.apply = tree.apply
         self.leaf_value = np.ascontiguousarray(tree.value[:, 0, 0])
 
@@ -66,12 +80,12 @@ class FastRegTree:
 _FAST_TREES: WeakKeyDictionary[Forest, tuple[list[Any], list[Any]]] = WeakKeyDictionary()
 
 
-def _fast_trees(rf: Forest, klasa: type[FastTree] | type[FastRegTree]) -> list[Any]:
-    zapis = _FAST_TREES.get(rf)
-    if zapis is None or zapis[0] is not rf.estimators_:     # nowy las albo uczony ponownie
-        zapis = (rf.estimators_, [klasa(e) for e in rf.estimators_])
-        _FAST_TREES[rf] = zapis
-    return zapis[1]
+def _fast_trees(rf: Forest, tree_cls: type[FastTree] | type[FastRegTree]) -> list[Any]:
+    cached = _FAST_TREES.get(rf)
+    if cached is None or cached[0] is not rf.estimators_:   # nowy las albo uczony ponownie
+        cached = (rf.estimators_, [tree_cls(e) for e in rf.estimators_])
+        _FAST_TREES[rf] = cached
+    return cached[1]
 
 
 def fast_trees(rf: RandomForestClassifier) -> list[FastTree]:
@@ -84,10 +98,16 @@ def fast_reg_trees(rf: RandomForestRegressor) -> list[FastRegTree]:
     return _fast_trees(rf, FastRegTree)
 
 
-def czy_stop_para(votes: IntArray, prog: IntArray) -> BoolArray:
-    """Reguła dla pary lider - druga klasa: stop, gdy t_1 >= prog[t_2]."""
+def stop_pair(votes: IntArray, threshold: IntArray) -> BoolArray:
+    """Reguła dla pary lider - druga klasa: stop, gdy t_1 >= threshold[t_2]."""
     t = np.partition(votes, -2, axis=1)             # dwie ostatnie kolumny: t_2, t_1
-    return t[:, -1] >= prog[t[:, -2]]
+    return t[:, -1] >= threshold[t[:, -2]]
+
+
+def stop_pair_one(votes: IntArray, threshold: IntArray) -> bool:
+    """stop_pair dla jednej próbki, votes ma kształt (l,)."""
+    t = np.sort(votes)
+    return bool(t[-1] >= threshold[t[-2]])
 
 
 class InferenceMethod:
@@ -109,9 +129,14 @@ class InferenceMethod:
             self.name = name
 
     def fit(self, rf: RandomForestClassifier, X_train: ArrayLike | None = None,
-            y_train: ArrayLike | None = None) -> Self:
+            y_train: ArrayLike | None = None, X_val: ArrayLike | None = None,
+            y_val: ArrayLike | None = None) -> Self:
+        """X_train, y_train: dane, na których uczono las; X_val, y_val: zbiór walidacyjny,
+        którego las nie widział (dla metod z calib="val"). Metoda bierze z nich to, czego
+        potrzebuje, reszta jest ignorowana."""
         if not hasattr(rf, "classes_"):
-            raise ValueError(f"{self.name}: metoda klasyfikacyjna, a las to {type(rf).__name__}")
+            raise ValueError(f"{self.name}: classification method, "
+                             f"but the forest is {type(rf).__name__}")
         self.rf = rf
         self.trees = fast_trees(rf)
         self.classes = rf.classes_
@@ -125,8 +150,8 @@ class InferenceMethod:
         jest sprawdzany tutaj, raz na wywołanie predykcji."""
         X = to_float32(X)
         if X.ndim != 2 or X.shape[1] != self.n_features:
-            raise ValueError(f"{self.name}: X ma kształt {X.shape}, a las uczono na "
-                             f"{self.n_features} cechach (oczekiwany kształt (n, {self.n_features}))")
+            raise ValueError(f"{self.name}: X has shape {X.shape}, "
+                             f"expected (n, {self.n_features})")
         return X
 
     def predict_batch(self, X: ArrayLike) -> Prediction:
@@ -146,7 +171,8 @@ class FixedVoting(InferenceMethod):
     voters: list[FastTree]
 
     def fit(self, rf: RandomForestClassifier, X_train: ArrayLike | None = None,
-            y_train: ArrayLike | None = None) -> Self:
+            y_train: ArrayLike | None = None, X_val: ArrayLike | None = None,
+            y_val: ArrayLike | None = None) -> Self:
         super().fit(rf)
         self.voters = self.trees
         return self
@@ -154,9 +180,9 @@ class FixedVoting(InferenceMethod):
     def predict_batch(self, X: ArrayLike) -> Prediction:
         X = self._X32(X)
         votes = np.zeros((len(X), self.l), dtype=int)
-        wiersze = np.arange(len(X))
+        rows = np.arange(len(X))
         for tree in self.voters:
-            votes[wiersze, tree.predict(X)] += 1
+            votes[rows, tree.predict(X)] += 1
         return self.classes[votes.argmax(axis=1)], np.full(len(X), len(self.voters))
 
     def predict_one(self, x: ArrayLike) -> tuple[Any, int]:
@@ -176,12 +202,14 @@ class SequentialPruning(InferenceMethod):
     def __init__(self, name: str | None = None, order: Order = "fixed",
                  seed: int | None = None) -> None:
         if order not in self.ORDERS:
-            raise ValueError(f"order musi być jednym z {self.ORDERS}, a jest {order!r}")
+            raise ValueError(f"{type(self).__name__}: order must be one of {self.ORDERS}, "
+                             f"got {order!r}")
         self.order, self.seed = order, seed
         super().__init__(name)
 
     def fit(self, rf: RandomForestClassifier, X_train: ArrayLike | None = None,
-            y_train: ArrayLike | None = None) -> Self:
+            y_train: ArrayLike | None = None, X_val: ArrayLike | None = None,
+            y_val: ArrayLike | None = None) -> Self:
         super().fit(rf)
         self.rng = np.random.default_rng(self.seed)
         if self.order == "shuffled":                # jedna permutacja lasu dla wszystkich próbek
@@ -203,17 +231,17 @@ class SequentialPruning(InferenceMethod):
             return self._predict_batch_random(X)
         votes = np.zeros((len(X), self.l), dtype=int)
         n_used = np.full(len(X), self.T)
-        aktywne = np.arange(len(X))                 # próbki jeszcze niezdecydowane
-        X_akt = X                                   # ich cechy, czyli X[aktywne]
+        active = np.arange(len(X))                  # próbki jeszcze niezdecydowane
+        X_active = X                                # ich cechy, czyli X[active]
         for k, tree in enumerate(self.trees):
-            votes[aktywne, tree.predict(X_akt)] += 1
-            stop = self._stop_batch(votes[aktywne])
+            votes[active, tree.predict(X_active)] += 1
+            stop = self._stop_batch(votes[active])
             if stop.any():                          # cechy kopiujemy tylko, gdy ktoś odpadł
-                n_used[aktywne[stop]] = k + 1
-                aktywne = aktywne[~stop]
-                if len(aktywne) == 0:
+                n_used[active[stop]] = k + 1
+                active = active[~stop]
+                if len(active) == 0:
                     break
-                X_akt = X_akt[~stop]
+                X_active = X_active[~stop]
         return self.classes[votes.argmax(axis=1)], n_used
 
     def _predict_batch_random(self, X: Features) -> Prediction:
@@ -223,19 +251,19 @@ class SequentialPruning(InferenceMethod):
         # perm[i, k] = drzewo, które próbka i pyta w kroku k
         perm = np.tile(np.arange(self.T, dtype=np.min_scalar_type(self.T)), (n, 1))
         perm = self.rng.permuted(perm, axis=1)
-        aktywne = np.arange(n)
+        active = np.arange(n)
         for k in range(self.T):
             # próbki pytające w tym kroku to samo drzewo idą do niego jednym wywołaniem
-            drzewa = perm[aktywne, k]
-            idx = np.argsort(drzewa, kind="stable")
-            probki, drzewa = aktywne[idx], drzewa[idx]
-            granice = np.flatnonzero(np.diff(drzewa)) + 1
-            for grupa, j in zip(np.split(probki, granice), drzewa[np.r_[0, granice]]):
-                votes[grupa, self.trees[j].predict(X[grupa])] += 1
-            stop = self._stop_batch(votes[aktywne])
-            n_used[aktywne[stop]] = k + 1
-            aktywne = aktywne[~stop]
-            if len(aktywne) == 0:
+            tree_ids = perm[active, k]
+            idx = np.argsort(tree_ids, kind="stable")
+            samples, tree_ids = active[idx], tree_ids[idx]
+            bounds = np.flatnonzero(np.diff(tree_ids)) + 1
+            for group, j in zip(np.split(samples, bounds), tree_ids[np.r_[0, bounds]]):
+                votes[group, self.trees[j].predict(X[group])] += 1
+            stop = self._stop_batch(votes[active])
+            n_used[active[stop]] = k + 1
+            active = active[~stop]
+            if len(active) == 0:
                 break
         return self.classes[votes.argmax(axis=1)], n_used
 

@@ -11,7 +11,7 @@ sequenceDiagram
   participant T as testing.py
   participant R as methods<br/>registry
   participant D as benchmarking<br/>data
-  participant F as methods_rf
+  participant F as ForestMethods
   participant M as Inference<br/>Method x7
   participant B as benchmark
   participant S as benchmark<br/>suite
@@ -19,27 +19,31 @@ sequenceDiagram
   Note over T: import config<br/>config.py parses config.toml with tomllib<br/>into TASK, DATASETS, SEEDS, MODES,<br/>N_TREES, MAX_DEPTH, METHODS ...
   T->>R: build_methods(METHODS, SKLEARN_SOFT_VOTING, TASK)
   R-->>T: 7 unfitted methods (config validation)
-  T->>D: znajdz_zbiory(DATASETS)
+  T->>D: find_datasets(DATASETS)
   D-->>T: paths of data/generated/binary/*.parquet
-  T->>S: benchmark_suite(keys = dataset, seed, out_dir = data/results/binary)
+  T->>S: BenchmarkSuite(keys = dataset, seed, out_dir = data/results/binary)
 
   loop every .parquet file
-    T->>D: wczytaj(plik, DROP_COLUMNS)
+    T->>D: load_dataset(path, DROP_COLUMNS)
     D-->>T: X, y
     loop every seed in 1, 2, 3
       T->>T: train_test_split(test_size = 0.3, seed)
+      opt val_size > 0
+        T->>T: train_test_split(X_train, val_size / (1 - test_size), seed)
+        Note over T: X_val, y_val held out of training<br/>(otherwise None)
+      end
       T->>D: train_forest(X_train, y_train, 501, 5, seed, TASK)
       D-->>T: rf (RandomForestClassifier)
-      T->>F: methods_rf(rf, X_train, y_train)
+      T->>F: ForestMethods(rf, X_train, y_train, X_val, y_val)
       T->>R: build_methods(...)
       R-->>T: fresh method instances
       loop every method
         T->>F: add_method(method)
-        F->>M: fit(rf, X_train, y_train)
-        Note over M: IB reads data/tablice/T501_L2_pi98.npz<br/>HYPER, OWN, MARGIN calibrate on out-of-bag votes<br/>GLEE computes its table from T and pi
+        F->>M: fit(rf, X_train, y_train, X_val, y_val)
+        Note over M: IB reads data/tablice/T501_L2_pi98.npz<br/>HYPER, OWN, MARGIN calibrate on out-of-bag votes<br/>(calib = "val": on X_val, y_val)<br/>GLEE computes its table from T and pi
         M-->>F: fitted method with stop thresholds
       end
-      T->>B: benchmark(m, X_test, y_test, metadata, N_ONLINE, N_REPEATS)
+      T->>B: Benchmark(m, X_test, y_test, metadata, N_ONLINE, N_REPEATS)
       T->>B: run(MODES)
       loop mode in batch, online
         B->>F: run(first n rows of X_test, mode, n_repeats)
@@ -64,9 +68,10 @@ sequenceDiagram
 | Data | Produced by | Consumed by |
 |---|---|---|
 | Constants (`TASK`, `DATASETS`, `SEEDS`, `MODES`, `N_TREES`, `MAX_DEPTH`, `METHODS`, ...) | `config.py` from `config.toml` | `testing.py` only; `methods` and `benchmarking` never read the config |
-| `list[InferenceMethod]` (unfitted) | `registry.build_methods`: one `[[methods]]` block becomes one constructor call, `rf_sklearn` is prepended when `sklearn_soft_voting = true`, blocks with `enabled = false` or of the other task are skipped | `methods_rf.add_method` |
-| `X, y` | `data.wczytaj` from a `.parquet` file | `train_test_split` |
-| `rf` | `data.train_forest` on `X_train, y_train` | `methods_rf`, then every method's `fit` |
-| Stop thresholds (`prog`, `voters`) | each method's `fit`: IB from a `.npz` table, HYPER/OWN/MARGIN from out-of-bag predictions on `X_train`, GLEE from `T` and `pi` | `predict_batch` / `predict_one` |
-| `Y_pred, N_used, times` (one row per method) | `methods_rf.run` on `X_test` | `benchmark._compute_results` |
-| Metrics table (accuracy, f1, `agree_*`, `speedup_vs_*`, `trees_*`) | `benchmark.results(mode)` using `y_test` | `benchmark_suite`, which writes `runs/*.npz`, `results_*.csv`, `aggregate_*.csv` |
+| `list[InferenceMethod]` (unfitted) | `registry.build_methods`: one `[[methods]]` block becomes one constructor call, `rf_sklearn` is prepended when `sklearn_soft_voting = true`, blocks with `enabled = false` or of the other task are skipped | `ForestMethods.add_method` |
+| `X, y` | `data.load_dataset` from a `.parquet` file | `train_test_split` |
+| `X_val, y_val` | a second `train_test_split` of the training part when `val_size > 0` (`None` otherwise); the forest never sees them | `fit` of methods with `calib = "val"` |
+| `rf` | `data.train_forest` on `X_train, y_train` | `ForestMethods`, then every method's `fit` |
+| Stop thresholds (`threshold`, `voters`) | each method's `fit`: IB from a `.npz` table, HYPER/OWN/MARGIN from out-of-bag predictions on `X_train` (or, with `calib = "val"`, predictions on `X_val`), GLEE from `T` and `pi` | `predict_batch` / `predict_one` |
+| `Y_pred, N_used, times` (one row per method) | `ForestMethods.run` on `X_test` | `Benchmark._compute_results` |
+| Metrics table (accuracy, f1, `agree_*`, `speedup_vs_*`, `trees_*`) | `Benchmark.results(mode)` using `y_test` | `BenchmarkSuite`, which writes `runs/*.npz`, `results_*.csv`, `aggregate_*.csv` |

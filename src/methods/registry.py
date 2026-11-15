@@ -32,17 +32,18 @@ METHOD_TYPES: dict[str, type[InferenceMethod]] = {
 def build_method(spec: MethodSpec) -> InferenceMethod:
     """Klucze poza type i enabled są argumentami konstruktora klasy METHOD_TYPES[type]."""
     spec = dict(spec)
-    typ = spec.pop("type", None)
+    method_type = spec.pop("type", None)
     spec.pop("enabled", None)
-    if typ == SklearnRF.name:
-        raise ValueError(f"'{SklearnRF.name}' włącza się przez benchmark.sklearn_soft_voting, "
-                         f"nie przez [[methods]]")
-    if typ not in METHOD_TYPES:
-        raise ValueError(f"nieznany typ metody {typ!r}, dostępne: {list(METHOD_TYPES)}")
+    if method_type == SklearnRF.name:
+        raise ValueError(f"'{SklearnRF.name}' is enabled by benchmark.sklearn_soft_voting, "
+                         f"not by [[methods]]")
+    if method_type not in METHOD_TYPES:
+        raise ValueError(f"unknown method type {method_type!r}, "
+                         f"expected one of {list(METHOD_TYPES)}")
     try:
-        return METHOD_TYPES[typ](**spec)
+        return METHOD_TYPES[method_type](**spec)
     except TypeError as e:
-        raise ValueError(f"złe parametry metody {typ!r}: {e}") from None
+        raise ValueError(f"bad parameters for {method_type!r}: {e}") from None
 
 
 def build_methods(specs: Iterable[MethodSpec], sklearn_soft_voting: bool = True,
@@ -53,12 +54,13 @@ def build_methods(specs: Iterable[MethodSpec], sklearn_soft_voting: bool = True,
     methods: list[InferenceMethod] = [rf_sklearn] if sklearn_soft_voting else []
     for s in specs:
         # typ decyduje o zadaniu, więc bloki innego zadania nie są nawet tworzone
-        if s.get("enabled", True) and getattr(METHOD_TYPES.get(s.get("type")), "task", task) == task:
+        method_task = getattr(METHOD_TYPES.get(s.get("type")), "task", task)
+        if s.get("enabled", True) and method_task == task:
             methods.append(build_method(s))
     names = [m.name for m in methods]
-    duplikaty = sorted({n for n in names if names.count(n) > 1})
-    if duplikaty:
-        raise ValueError(f"powtórzone nazwy metod: {duplikaty} (ustaw im różne 'name')")
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    if duplicates:
+        raise ValueError(f"duplicate method names: {duplicates} (give them different 'name')")
     if not methods:
-        raise ValueError(f"nie wybrano żadnej metody do benchmarku (zadanie: {task})")
+        raise ValueError(f"no methods selected (task: {task})")
     return methods

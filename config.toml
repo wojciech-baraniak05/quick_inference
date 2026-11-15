@@ -16,6 +16,8 @@ task = "classification"
 
 # zbiory danych: ścieżki względem data/; folder = wszystkie pliki *.parquet w nim,
 # np. ["generated/binary", "generated/multiclass/multi_small.parquet"]
+# 10 syntetycznych zbiorów binarnych; SUSY (5 mln wierszy, liczy się długo) dochodzi po
+# dopisaniu "real_data/binary" na końcu listy
 datasets = ["generated/binary"]
 out_dir = "results/binary"          # względem data/
 # kolumny zbiorów, które nie są cechami (pomijane, jeśli są w pliku); w gas_turbine
@@ -25,21 +27,41 @@ drop_columns = ["year", "CO"]
 # scenariusze: "batch" - cały X_test naraz, "online" - każda próbka osobno
 modes = ["batch", "online"]
 
-seeds = [1, 2, 3]                   # powtórzenia: podział danych i las z danym seedem
+seeds = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]                   # powtórzenia: podział danych i las z danym seedem
 test_size = 0.3
+# zbiór walidacyjny dla metod z calib = "val" (hyper, own, margin): część CAŁEGO zbioru
+# odkładana z danych uczących przed treningiem lasu, więc las jej nie widzi; test_size się
+# nie zmienia, np. test_size = 0.3, val_size = 0.1 -> las uczy się na 60% danych.
+# Las jest wspólny dla wszystkich metod, więc przy val_size > 0 metody out-of-bag też
+# dostają las uczony na mniejszych danych. 0 = bez zbioru walidacyjnego (calib = "val"
+# jest wtedy pomijane z komunikatem)
+val_size = 0.0
 n_online = 500                      # liczba próbek w scenariuszu online
-n_repeats = 1                       # ile razy mierzyć czas każdej metody (mediana)
+n_repeats = 4                       # ile razy mierzyć czas każdej metody (mediana)
 
 # true  - badamy też las losowy ze scikit-learn (rf_sklearn: rf.predict, soft voting,
 #         czyli średnia prawdopodobieństw drzew) i porównujemy z nim (agree_rf, speedup_vs_rf)
 # false - badamy tylko metody, które odpytują pojedyncze drzewa (hard voting)
 # w regresji rf_sklearn to rf.predict lasu regresyjnego (średnia wyjść drzew)
-sklearn_soft_voting = true
+sklearn_soft_voting = false
 
 
 [forest]
 n_trees = 501
-max_depth = 5                       # usuń klucz, żeby drzewa nie miały limitu głębokości
+max_depth = 5                       # "none" (albo brak klucza) = drzewa bez limitu głębokości
+
+# nadpisania [forest] dla pojedynczych zbiorów: [forest.per_dataset.<nazwa pliku bez .parquet>]
+# z kluczami n_trees i/lub max_depth; brak klucza = wartość z [forest]. Zmiana n_trees
+# wymaga tablic IB dla nowego T (inaczej ib_pruning jest pomijane dla tego zbioru).
+# max_depth = 5 jest za płytkie dla zbiorów ze 100 cechami (50 informatywnych): drzewa są
+# słabe, głosy bliskie remisu, więc las traci dokładność, a metody z wczesnym stopem
+# potrzebują więcej drzew (binary_multi_features, seed 1: accuracy 0.82 -> 0.94,
+# IB_pi98 trees_frac 0.12 -> 0.09 po zdjęciu limitu)
+[forest.per_dataset.binary_multi_features]
+max_depth = "none"
+
+# [forest.per_dataset.multi_multi_features]
+# max_depth = "none"
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +78,10 @@ max_depth = 5                       # usuń klucz, żeby drzewa nie miały limit
 #   "full" (domyślnie) - tablica dla wszystkich klas naraz (IB: plik T{T}_L{l}; HYPER i own:
 #                        do 3 klas przy 501 drzewach)
 #   "pair"             - lider kontra druga klasa na tablicach binarnych, dowolna liczba klas
+# hyper, own i margin mają calib - na czym kalibrują się w fit():
+#   "oob" (domyślnie) - dane uczące oceniane out-of-bag (tylko drzewa, które próbki nie widziały)
+#   "val"             - zbiór walidacyjny z benchmark.val_size (głosują wszystkie drzewa);
+#                       nazwa dostaje przyrostek _val, np. HYPER_pi98_val, MARGIN_k0_val
 # ---------------------------------------------------------------------------
 [[methods]]
 type = "full_voting"                # hard voting wszystkich drzew (odniesienie dla agree_full)
@@ -86,9 +112,16 @@ enabled = false
 [[methods]]
 type = "hyper"                      # IB pruning z a priori z głosów out-of-bag (Soto i in., 2016)
 pi = 0.98                           # tablica liczona w fit() z danych uczących, bez pliku
-# n_prior = 20000                   # ile próbek uczących do głosów OOB (domyślnie 20000)
+# n_prior = 20000                   # ile próbek kalibracyjnych do głosów (domyślnie 20000)
 # smooth = 5                        # okno wygładzania a priori (0 = bez wygładzania)
 # multiclass = "pair"               # tablice binarne lider - druga klasa (nazwa: HYPER_pi98_pair)
+# calib = "val"                     # a priori z głosów na zbiorze walidacyjnym (nazwa: HYPER_pi98_val)
+
+[[methods]]
+type = "hyper"                      # HYPER kalibrowany na zbiorze walidacyjnym (nazwa: HYPER_pi98_val)
+pi = 0.98
+calib = "val"                       # potrzebuje benchmark.val_size > 0
+enabled = false
 
 [[methods]]
 type = "glee"                       # gaussowski przedział ufności (GLEE z COMET, Basilico i in., 2011)
@@ -101,7 +134,8 @@ pi = 0.98                           # alfa = 1 - pi; tablica liczona w fit(), be
 type = "margin"                     # stała liczba drzew z marginesu lasu (Barbareschi, Emmanuele, 2025)
 k = 0.0                             # N* = n_trees * (mu + k * sigma); k > 0: więcej drzew, k < 0: mniej
 # ranking = "mean_d_m"              # kolejność drzew: "mean_d_m" (artykuł) | "accuracy" | "none"
-# n_calib = 20000                   # ile próbek uczących do kalibracji out-of-bag (domyślnie 20000)
+# n_calib = 20000                   # ile próbek do kalibracji (domyślnie 20000)
+# calib = "val"                     # kalibracja na zbiorze walidacyjnym (nazwa: MARGIN_k0_val)
 
 [[methods]]
 type = "own"                        # metoda własna: HYPER z a priori lam * P_OOB + (1 - lam) * P_jednostajny
@@ -110,14 +144,13 @@ lam = 0.5                           # 1 = HYPER, 0 = IB pruning
 # glee = true                       # wariant rozszerzony: stop, gdy pozwala HYPER lub GLEE (nazwa: ..._glee)
 # pi_glee = 0.99                    # poziom ufności reguły GLEE (domyślnie pi)
 # min_votes = 15                    # jak w glee
-# n_prior, smooth, multiclass       # jak w hyper
+# n_prior, smooth, multiclass, calib  # jak w hyper
 
 [[methods]]
-type = "own"
+type = "own"                        # wariant rozszerzony (nazwa: OWN_lam0.5_pi98_glee)
 pi = 0.98
 lam = 0.5
 glee = true
-enabled = false
 
 
 # --- regresja (task = "regression") -----------------------------------------

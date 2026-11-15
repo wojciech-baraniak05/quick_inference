@@ -31,7 +31,9 @@ On top of the four literature methods, the project's design document adds
 - **regression variants** of IB pruning and GLEE (`ib_reg`, `glee_reg`) and an **own
   regression method** (`own_reg`), for `RandomForestRegressor` forests;
 - a **pairwise multi-class rule** for IB pruning, HYPER and the own method
-  (`multiclass = "pair"`), and a `shuffled` tree order.
+  (`multiclass = "pair"`), and a `shuffled` tree order;
+- **calibration on a validation set** instead of out-of-bag data for HYPER, the own method
+  and margin (`calib = "val"`, see [Validation set instead of out-of-bag](#validation-set-instead-of-out-of-bag)).
 
 ## How to run?
 
@@ -91,8 +93,9 @@ from config import SEED, MODES, METHODS
 | Section | Keys |
 |---|---|
 | top level | `seed`: random seed for synthetic dataset generation |
-| `[benchmark]` | `task` (`classification` or `regression`, default `classification`), `datasets` (folders or files under `data/`), `drop_columns` (dataset columns that are not features), `out_dir`, `modes` (`batch`, `online`), `seeds`, `test_size`, `n_online`, `n_repeats`, `sklearn_soft_voting` |
-| `[forest]` | `n_trees`, `max_depth` (omit for unlimited depth) |
+| `[benchmark]` | `task` (`classification` or `regression`, default `classification`), `datasets` (folders or files under `data/`), `drop_columns` (dataset columns that are not features), `out_dir`, `modes` (`batch`, `online`), `seeds`, `test_size`, `val_size` (share of the whole dataset held out of training for `calib = "val"`, default 0), `n_online`, `n_repeats`, `sklearn_soft_voting` |
+| `[forest]` | `n_trees`, `max_depth` (omit or `"none"` for unlimited depth) |
+| `[forest.per_dataset.<name>]` | optional per-dataset override of `n_trees` and/or `max_depth`; `<name>` is the dataset file name without `.parquet`, missing keys fall back to `[forest]` |
 | `[[methods]]` | one block per benchmarked method: `type` (classification: `full_voting`, `ib_pruning`, `hyper`, `glee`, `margin`, `own`; regression: `full_averaging`, `ib_reg`, `glee_reg`, `own_reg`), optional `name` and `enabled`, plus the method's parameters |
 
 `task` selects the forest (`RandomForestClassifier` or `RandomForestRegressor`). Method
@@ -112,9 +115,9 @@ random permutation instead of the `rf.estimators_` order; the default name becom
 `IB_pi{pi*100}_rand`. Batch mode is noticeably slower in this setting, because samples that
 query different trees cannot share one `predict` call.
 
-A `hyper` method takes `pi` and optionally `n_prior` (number of training samples used for
-the out-of-bag votes, default 20000) and `smooth` (prior smoothing window, default 5).
-It needs no table file.
+A `hyper` method takes `pi` and optionally `n_prior` (number of training or validation
+samples used for the votes, default 20000), `smooth` (prior smoothing window, default 5) and
+`calib` (`oob` or `val`, see below). It needs no table file.
 
 A `glee` method takes `pi` (the paper's `α` is `1 - pi`) and optionally `min_votes`
 (votes required before stopping; default 15, 30 or 45 depending on `α`, as in the paper),
@@ -123,12 +126,13 @@ It needs no table file and no training data, and works for any number of classes
 
 A `margin` method takes `k` (default 0; larger = more trees) and optionally `ranking`
 (`mean_d_m`, `accuracy` or `none`; default `mean_d_m`) and `n_calib` (number of training
-samples used for calibration, default 20000). It needs no table file and works for any
-number of classes. It has no `pi`: its results are named `MARGIN_k0`, `MARGIN_k-0.5` etc.
+samples used for calibration, default 20000) and `calib`. It needs no table file and
+works for any number of classes. It has no `pi`: its results are named `MARGIN_k0`,
+`MARGIN_k-0.5` etc.
 
 An `own` method takes `pi`, `lam` (prior mixing weight, default 0.5), `glee`
 (default `false`), `pi_glee` and `min_votes` for the GLEE rule, and HYPER's `n_prior`,
-`smooth` and `multiclass`.
+`smooth`, `multiclass` and `calib`.
 
 The regression methods `ib_reg`, `glee_reg` and `own_reg` take `pi` and exactly one of
 `delta` (tolerance in target units) and `delta_std` (tolerance in standard deviations of
@@ -137,6 +141,20 @@ The regression methods `ib_reg`, `glee_reg` and `own_reg` take `pi` and exactly 
 
 Every early-stopping method (all except `full_*` and `margin`) takes `order`
 (`fixed`, `shuffled` or `random`) and `seed`.
+
+### Validation set instead of out-of-bag
+
+`hyper`, `own` and `margin` calibrate in `fit` on the training data with out-of-bag votes by
+default (`calib = "oob"`). With `calib = "val"` they calibrate on a validation set instead,
+which every tree votes on. The method name gets a `_val` suffix (`HYPER_pi98_val`,
+`MARGIN_k0_val`), so both versions can run side by side on the same forest.
+
+The validation set comes from `benchmark.val_size`, a share of the **whole** dataset taken out
+of the training part before the forest is trained, so the forest never sees it. With
+`test_size = 0.3` and `val_size = 0.1` the forest is trained on 60% of the data; the test set
+is unchanged. The forest is shared, so with `val_size > 0` every method (out-of-bag ones too)
+uses that smaller forest. With `val_size = 0` (the default) methods with `calib = "val"` are
+skipped with a message. `own_reg` always uses out-of-bag data.
 
 To add a setting, add the key to `config.toml` and expose it in `src/config.py`.
 
@@ -170,8 +188,8 @@ Tables are stored in `data/tablice/` as `T{T}_L{l}_pi{pi*100}.npz`.
 To generate another table, run this from `src/`:
 
 ```python
-from generate_table_IB import generuj_tablice
-generuj_tablice(T=501, l=2, pi=0.98)
+from methods import generate_table
+generate_table(T=501, l=2, pi=0.98)
 ```
 
 `T` must equal the forest's `n_estimators` and `l` its number of classes.
@@ -185,8 +203,9 @@ seen so far, the posterior of the composition `T` is `P(T|t) ∝ ∏ C(T_i, t_i)
 voting stops when the posterior probability that the full forest elects the current leader
 is ≥ `pi`. With a uniform `P(T)` this is exactly IB pruning; HYPER estimates `P(T)` instead:
 
-1. `fit(rf, X_train)` collects the out-of-bag votes of the training samples, rescales each
-   to `T` trees and builds a histogram of compositions, smoothed with a window of 5;
+1. `fit(rf, X_train)` collects the out-of-bag votes of the training samples (with
+   `calib = "val"`: the votes of all trees on the validation set), rescales each to `T`
+   trees and builds a histogram of compositions, smoothed with a window of 5;
 2. a backward recursion over vote counts turns the prior into one threshold table per
    leading class (classes are no longer interchangeable);
 3. prediction is the same sequential loop as IB pruning with a different table lookup.
@@ -215,7 +234,7 @@ because the Gaussian approximation is poor for small `n`. With more than two cla
 leader is treated as class 1 and the runner-up as class 0 (`p̂ = t₁ / (t₁ + t₂)`,
 `n = t₁ + t₂`), as the paper suggests.
 
-`Glee.fit` turns the rule into a threshold table `prog[t₂]` = fewest leader votes that stop
+`Glee.fit` turns the rule into a threshold table `threshold[t₂]` = fewest leader votes that stop
 (a few milliseconds for 501 trees), so prediction is the same loop and lookup as IB pruning.
 The table depends only on `T` and the parameters: no file, no training data, no limit on the
 number of classes. `fpc = false` and `one_sided = false` give the paper's G1, G2 and G2-FPC
@@ -250,7 +269,9 @@ in the paper and is not implemented).
 The paper calibrates on half of the test set. Here the calibration set is the training data
 with out-of-bag votes (each sample is voted on only by trees that did not see it), so the
 whole test set is left for measurement, as for the other methods. This needs a forest
-trained with `bootstrap=True`.
+trained with `bootstrap=True`. With `calib = "val"` the calibration set is a validation set
+held out of the training data, closer to the paper: all trees vote and the margin is
+divided by `T`.
 
 There is no confidence level: `k` trades trees for agreement directly, and `agree_full` is
 not checked against a `pi`. Because `N*` grows with the mean margin, the method keeps *more*
@@ -319,7 +340,7 @@ You can also run its `# %%` cells interactively in VS Code.
 Results are written to `data/<benchmark.out_dir>/`. Each (dataset, seed) run is saved as soon
 as it finishes (`runs/<dataset>_seed<seed>.npz`, and the `.csv` tables are rewritten), so an
 interrupted benchmark keeps what it has computed. After a run the forest and the data are
-released (`benchmark.release()`); only the predictions and timings stay in memory.
+released (`Benchmark.release()`); only the predictions and timings stay in memory.
 
 Reported per method: accuracy, macro precision/recall/F1, agreement with sklearn and with
 full voting (`agree_rf`, `agree_full`), prediction time, speed-up, and trees queried per sample
@@ -366,10 +387,11 @@ some_param = 3        # passed to MyMethod(some_param=3)
 Without the config, you can also use the method directly:
 
 ```python
-from benchmarking import methods_rf
-m = methods_rf(rf)              # includes rf_sklearn and full_voting
+from benchmarking import ForestMethods
+m = ForestMethods(rf)              # includes rf_sklearn and full_voting
                                 # pass X_train=..., y_train=... for methods that need training
-                                # data (hyper: X_train, margin: both)
+                                # data (hyper: X_train, margin: both), and X_val=..., y_val=...
+                                # for methods with calib="val"
 m.add_method(MyMethod())
 ```
 
@@ -402,14 +424,14 @@ src/
                              loop, ib_reg and glee_reg
     own.py                   own methods: own (classification), own_reg (regression)
     oob.py                   out-of-bag predictions on the training data (used by hyper, margin, own)
+    validation.py            the same on a validation set (calib="val" in hyper, margin, own)
     registry.py              builds methods from [[methods]] in config.toml
   benchmarking/              benchmark machinery, independent of config.toml
     modes.py                 batch / online scenarios
-    forest_methods.py        methods_rf: methods fitted to one forest
-    benchmark.py             benchmark: one forest, one test set
-    suite.py                 benchmark_suite: many datasets and seeds
+    forest_methods.py        ForestMethods: methods fitted to one forest
+    benchmark.py             Benchmark: one forest, one test set
+    suite.py                 BenchmarkSuite: many datasets and seeds
     data.py                  dataset loading, forest training
-  generate_table_IB.py       stop-table generation for IB pruning
   testing.py                 benchmark run driven by config.toml
   test_dt.ipynb              scratch notebook for forest/tree experiments
   data_generate/

@@ -7,31 +7,31 @@ import numpy as np
 from numpy.typing import ArrayLike
 from sklearn.ensemble import RandomForestRegressor
 
-from generate_table_IB import pi_tag
-
-from .base import ORDER_SUFFIX, FloatArray, IntArray, Multiclass, Order
-from .glee import tablica_glee
-from .hyper import Hyper, prior_jednostajny
-from .oob import wariancje_oob
-from .regression import SequentialRegression, mnoznik_studenta
+from .base import CALIB_SUFFIX, ORDER_SUFFIX, Calib, FloatArray, IntArray, Multiclass, Order, pi_tag
+from .glee import alpha_from_pi, glee_table
+from .hyper import Hyper, uniform_prior
+from .oob import oob_variances
+from .regression import SequentialRegression, student_multiplier
 
 
-def dolacz_glee(prog: IntArray, prog_glee: IntArray, para: bool) -> IntArray:
+def merge_glee(threshold: IntArray, glee_threshold: IntArray, pair: bool) -> IntArray:
     """Tablica reguły "HYPER lub GLEE": w każdej komórce mniejszy z dwóch progów głosów
-    lidera. prog ma format tablica_hyper albo (para=True) tablica_par."""
-    T = prog.shape[1] - 1
-    if para:
+    lidera. threshold ma format hyper_table albo (pair=True) pair_table."""
+    T = threshold.shape[1] - 1
+    if pair:
         t2 = np.arange(T + 1)[None, :]
     else:                                           # druga klasa: najwięcej głosów poza liderem
-        t2 = np.indices(prog.shape[1:]).max(axis=0)[None]
-    # prog_glee ma T // 2 + 1 elementów: druga klasa nie ma więcej niż połowy głosów
-    glee = np.where(t2 < len(prog_glee), prog_glee[np.minimum(t2, len(prog_glee) - 1)], T + 1)
-    return np.minimum(prog, glee.astype(prog.dtype))
+        t2 = np.indices(threshold.shape[1:]).max(axis=0)[None]
+    # glee_threshold ma T // 2 + 1 elementów: druga klasa nie ma więcej niż połowy głosów
+    n = len(glee_threshold)
+    glee = np.where(t2 < n, glee_threshold[np.minimum(t2, n - 1)], T + 1)
+    return np.minimum(threshold, glee.astype(threshold.dtype))
 
 
 class Own(Hyper):
     """HYPER z a priori lam * P_OOB + (1 - lam) * P_jednostajny (lam = 1: HYPER, lam = 0:
-    IB pruning); glee=True dodaje alternatywę z regułą GLEE."""
+    IB pruning); glee=True dodaje alternatywę z regułą GLEE. calib="val": P_OOB zastępuje
+    a priori z głosów na zbiorze walidacyjnym."""
 
     PREFIX = "OWN"
 
@@ -39,30 +39,31 @@ class Own(Hyper):
                  pi_glee: float | None = None, min_votes: int | None = None,
                  n_prior: int | None = 20000, smooth: int = 5, name: str | None = None,
                  order: Order = "fixed", seed: int | None = None,
-                 multiclass: Multiclass = "full") -> None:
+                 multiclass: Multiclass = "full", calib: Calib = "oob") -> None:
         if not 0 <= lam <= 1:
-            raise ValueError(f"Own: lam musi być w [0, 1], a jest {lam}")
+            raise ValueError(f"{type(self).__name__}: lam must be in [0, 1], got {lam}")
         pi_glee = pi if pi_glee is None else pi_glee
         if glee and not 0.5 < pi_glee <= 1:
-            raise ValueError(f"Own: reguła GLEE wymaga poziomu ufności w (0.5, 1], a jest {pi_glee}")
+            raise ValueError(f"{type(self).__name__}: GLEE rule needs pi_glee in (0.5, 1], "
+                             f"got {pi_glee}")
         if min_votes is not None and min_votes < 1:
-            raise ValueError(f"Own: min_votes musi być >= 1, a jest {min_votes}")
+            raise ValueError(f"{type(self).__name__}: min_votes must be >= 1, got {min_votes}")
         self.lam, self.glee, self.pi_glee, self.min_votes = lam, glee, pi_glee, min_votes
         if name is None:
             name = (f"OWN_lam{lam:g}_pi{pi_tag(pi)}" + ("_glee" if glee else "")
-                    + ("_pair" if multiclass == "pair" else "") + ORDER_SUFFIX[order])
-        super().__init__(pi, n_prior, smooth, name, order, seed, multiclass)
+                    + ("_pair" if multiclass == "pair" else "") + CALIB_SUFFIX.get(calib, "")
+                    + ORDER_SUFFIX.get(order, ""))
+        super().__init__(pi, n_prior, smooth, name, order, seed, multiclass, calib)
 
     def _prior(self, prior: FloatArray) -> FloatArray:
-        para = self.multiclass == "pair"
-        return self.lam * prior + (1 - self.lam) * prior_jednostajny(self.T, self.l, para)
+        pair = self.multiclass == "pair"
+        return self.lam * prior + (1 - self.lam) * uniform_prior(self.T, self.l, pair)
 
-    def _prog(self, prog: IntArray) -> IntArray:
+    def _threshold(self, threshold: IntArray) -> IntArray:
         if not self.glee:
-            return prog
-        alfa = round(1 - self.pi_glee, 12)          # bez błędu zaokrągleń 1 - 0.99
-        return dolacz_glee(prog, tablica_glee(self.T, alfa, self.min_votes),
-                           self.multiclass == "pair")
+            return threshold
+        glee = glee_table(self.T, alpha_from_pi(self.pi_glee), self.min_votes)
+        return merge_glee(threshold, glee, self.multiclass == "pair")
 
 
 class OwnRegression(SequentialRegression):
@@ -76,24 +77,25 @@ class OwnRegression(SequentialRegression):
                  n_prior: int | None = 20000, name: str | None = None,
                  order: Order = "fixed", seed: int | None = None) -> None:
         if nu0 < 0:
-            raise ValueError(f"OwnRegression: nu0 musi być >= 0, a jest {nu0}")
+            raise ValueError(f"{type(self).__name__}: nu0 must be >= 0, got {nu0}")
         self.nu0, self.n_prior = nu0, n_prior
         if name is None:
             tol = f"d{delta:g}" if delta is not None else f"ds{delta_std:g}"
-            name = f"OWNREG_nu{nu0:g}_pi{pi_tag(pi)}_{tol}{ORDER_SUFFIX[order]}"
+            name = f"OWNREG_nu{nu0:g}_pi{pi_tag(pi)}_{tol}{ORDER_SUFFIX.get(order, '')}"
         super().__init__(pi, delta, delta_std, t_min, name, order, seed)
 
     def fit(self, rf: RandomForestRegressor, X_train: ArrayLike | None = None,
-            y_train: ArrayLike | None = None) -> Self:
+            y_train: ArrayLike | None = None, X_val: ArrayLike | None = None,
+            y_val: ArrayLike | None = None) -> Self:
         if self.nu0 > 0 and isinstance(rf, RandomForestRegressor):  # inny las odrzuci super().fit
             if X_train is None:
-                raise ValueError(f"{self.name}: fit(rf, X_train) wymaga danych uczących lasu "
-                                 f"(wariancja wyjść out-of-bag)")
-            wariancje = wariancje_oob(rf, X_train, self.n_prior)
-            if len(wariancje) == 0:
-                raise ValueError(f"{self.name}: żadna próbka ucząca nie ma dwóch drzew out-of-bag")
-            self.sigma0_2 = float(np.median(wariancje))
+                raise ValueError(f"{self.name}: fit(rf, X_train) needs the forest's training data "
+                                 f"(out-of-bag output variance)")
+            variances = oob_variances(rf, X_train, self.n_prior)
+            if len(variances) == 0:
+                raise ValueError(f"{self.name}: no training sample has two out-of-bag trees")
+            self.sigma0_2 = float(np.median(variances))
         return super().fit(rf, X_train, y_train)
 
-    def _mnoznik(self) -> FloatArray:
-        return mnoznik_studenta(self.T, self.pi, self.t_min, self.nu0)
+    def _multiplier(self) -> FloatArray:
+        return student_multiplier(self.T, self.pi, self.t_min, self.nu0)

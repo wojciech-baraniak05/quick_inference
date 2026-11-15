@@ -13,7 +13,8 @@ UCI = "https://archive.ics.uci.edu/static/public"
 
 def save(df: pd.DataFrame, target: Hashable, subdir: str, name: str,
          extra: Sequence[str] = ()) -> None:
-    # extra: kolumny zapisywane pod oryginalną nazwą (nie są cechami)
+    """Zapisuje df jako data/real_data/{subdir}/{name}.parquet: cechy f0, f1, ..., cel target;
+    kolumny extra zostają pod oryginalną nazwą (nie są cechami)."""
     y = df.pop(target)
     meta = df[list(extra)]
     df = df.drop(columns=list(extra))
@@ -23,7 +24,11 @@ def save(df: pd.DataFrame, target: Hashable, subdir: str, name: str,
     out_dir = DATA_DIR / subdir
     out_dir.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out_dir / f"{name}.parquet", index=False)
-    print(f"Saved {subdir}/{name}.parquet: {df.shape[0]} samples, {df.shape[1] - 1 - len(extra)} features")
+    n_features = df.shape[1] - 1 - len(extra)
+    extra_cols = f" (+{', '.join(extra)})" if extra else ""
+    classes = "" if subdir == "regression" else f", {y.nunique()} classes"
+    print(f"saved {subdir}/{name}.parquet: {len(df):,} rows, {n_features} features"
+          f"{extra_cols}{classes}")
 
 
 def main() -> None:

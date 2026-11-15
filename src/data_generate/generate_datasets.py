@@ -11,12 +11,12 @@ from sklearn.datasets import make_classification, make_friedman1, make_regressio
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import SEED  # noqa: E402
 
+DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "generated"
 
 Params = dict[str, Any]         # argumenty generatora scikit-learn dla jednego zbioru
 
 
 def main() -> None:
-    DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "generated"
     BINARY: dict[str, Params] = {
         "binary_small": dict(n_samples=1_000, n_features=10, n_informative=5, n_redundant=2, n_classes=2, flip_y=0.02),
         "binary_large": dict(n_samples=500_000, n_features=20, n_informative=10, n_redundant=5, n_classes=2, flip_y=0.02),
@@ -52,7 +52,8 @@ def main() -> None:
         "reg_collinear": dict(n_samples=20_000, n_features=40, n_informative=8, effective_rank=5, tail_strength=0.1, noise=5.0),
         "reg_outliers": dict(n_samples=20_000, n_features=20, n_informative=10, noise=10.0),
     }
-    # make_regression jest liniowe, więc nieliniową zależność daje Friedman #1 (używa tylko pierwszych 5 cech)
+    # make_regression jest liniowe, więc nieliniową zależność daje Friedman #1
+    # (używa tylko pierwszych 5 cech)
     NONLINEAR_REGRESSION: dict[str, Params] = {
         "reg_hard_nonlinear": dict(n_samples=20_000, n_features=10, noise=1.0),
     }
@@ -76,16 +77,19 @@ def main() -> None:
             X, y = generator(**params, random_state=SEED)
 
             if name in OUTLIERS:
-                cfg = OUTLIERS[name]
+                outlier = OUTLIERS[name]
                 rng = np.random.default_rng(SEED)
-                rows = rng.choice(len(X), size=int(cfg["fraction"] * len(X)), replace=False)
-                X[rows] += rng.normal(0, cfg["scale"] * X.std(axis=0), size=(len(rows), X.shape[1]))
+                rows = rng.choice(len(X), size=int(outlier["fraction"] * len(X)), replace=False)
+                scale = outlier["scale"] * X.std(axis=0)
+                noise = rng.normal(0, scale, size=(len(rows), X.shape[1]))
+                X[rows] += noise
 
             df = pd.DataFrame(X).add_prefix("f")
             df["target"] = y
             df.to_parquet(out_dir / f"{name}.parquet", index=False)
 
-            print(f"Saved {subdir}/{name}.parquet: {X.shape[0]} samples, {X.shape[1]} features")
+            classes = "" if subdir == "regression" else f", {len(np.unique(y))} classes"
+            print(f"saved {subdir}/{name}.parquet: {len(X):,} rows, {X.shape[1]} features{classes}")
 
 
 if __name__ == "__main__":
