@@ -1,7 +1,15 @@
 # %%
-"""Benchmark metod inferencji; wszystkie ustawienia są w config.toml. Zapisuje surowe
+"""Benchmark metod inferencji; wszystkie ustawienia są w config.toml albo w pliku podanym
+w argumencie: python testing.py ../configs/classification_all.toml. Zapisuje surowe
 wyniki do pliku .parquet; metryki i podsumowanie: python -m analysis.summary."""
+import os
+import sys
 import time
+
+# plik ustawień z argumentu musi trafić do QI_CONFIG przed importem config; w komórkach
+# VS Code sys.argv to argumenty jądra, więc brany jest tylko argument kończący się na .toml
+if len(sys.argv) > 1 and sys.argv[1].endswith(".toml"):
+    os.environ["QI_CONFIG"] = sys.argv[1]
 
 from sklearn.model_selection import train_test_split
 
@@ -20,6 +28,7 @@ OUT_FILE = DATA_DIR / cfg.OUT_FILE
 names = [m.name for m in build_methods(cfg.METHODS, cfg.SKLEARN_SOFT_VOTING, cfg.TASK)]
 datasets = find_datasets(cfg.DATASETS)
 
+print(f"config: {cfg.CONFIG_PATH}")
 print(f"task={cfg.TASK} | {len(datasets)} datasets | seeds={cfg.SEEDS} | "
       f"modes={','.join(MODES)}")
 print(f"forest: {cfg.N_TREES} trees, max_depth={cfg.MAX_DEPTH} | "

@@ -1,0 +1,120 @@
+# Pełny przebieg klasyfikacji: wszystkie metody klasyfikacyjne na syntetycznych zbiorach
+# binarnych i wieloklasowych. Uruchomienie z src/:
+#   python testing.py ../configs/classification_all.toml
+#   python -m analysis.summary ../data/results/classification_all.parquet
+# Opis kluczy: config.toml w katalogu głównym i README (sekcja Configuration).
+
+seed = 1   # seed generowania zbiorów syntetycznych (tu nieużywany, wymagany przez config.py)
+
+
+[benchmark]
+task = "classification"
+
+# 10 zbiorów binarnych + 11 wieloklasowych (3-20 klas); zbiory rzeczywiste po dopisaniu
+# "real_data/binary" (SUSY, 5 mln wierszy, liczy się bardzo długo) i "real_data/multiclass"
+datasets = ["generated/binary", "generated/multiclass"]
+out_file = "results/classification_all.parquet"
+drop_columns = ["year", "CO"]
+
+modes = ["batch", "online"]
+seeds = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+test_size = 0.3
+# zbiór walidacyjny dla HYPER_pi98_val i MARGIN_k0_val: 10% całego zbioru, więc las (wspólny
+# dla wszystkich metod) uczy się na 60% danych zamiast 70%. 0 = bez zbioru walidacyjnego,
+# metody z calib = "val" są wtedy pomijane
+val_size = 0.1
+n_online = 500
+n_repeats = 4
+
+# rf_sklearn (rf.predict, soft voting) też w wynikach: kolumny agree_rf i speedup_vs_rf
+sklearn_soft_voting = true
+
+
+[forest]
+n_trees = 501
+max_depth = 5
+
+# zbiory ze 100 cechami (50 informatywnych): drzewa bez limitu głębokości. Przy max_depth = 5
+# drzewa są słabe, głosy bliskie remisu i las traci dokładność (binary_multi_features,
+# seed 1: accuracy 0.82 -> 0.94 po zdjęciu limitu)
+[forest.per_dataset.binary_multi_features]
+max_depth = "none"
+
+[forest.per_dataset.multi_multi_features]
+max_depth = "none"
+
+
+# ---------------------------------------------------------------------------
+# metody. Warianty "full" IB / HYPER / OWN działają dla 2-3 klas (tablice IB T501_L2 i
+# T501_L3, a priori HYPER do 3 klas przy 501 drzewach) i są pomijane z komunikatem na
+# zbiorach z 4+ klasami; tam liczą się warianty _pair (lider kontra druga klasa).
+# Dla 2 klas _pair daje te same predykcje co "full".
+# ---------------------------------------------------------------------------
+[[methods]]
+type = "full_voting"                # odniesienie dla agree_full
+
+[[methods]]
+type = "ib_pruning"                 # IB_pi98
+pi = 0.98
+
+[[methods]]
+type = "ib_pruning"                 # IB_pi98_pair
+pi = 0.98
+multiclass = "pair"
+
+[[methods]]
+type = "ib_pruning"                 # IB_pi98_rand: losowa kolejność drzew dla każdej próbki
+pi = 0.98                           # (batch wyraźnie wolniejszy)
+order = "random"
+seed = 0
+
+[[methods]]
+type = "hyper"                      # HYPER_pi98
+pi = 0.98
+
+[[methods]]
+type = "hyper"                      # HYPER_pi98_pair
+pi = 0.98
+multiclass = "pair"
+
+[[methods]]
+type = "hyper"                      # HYPER_pi98_val: a priori z głosów na zbiorze walidacyjnym
+pi = 0.98
+calib = "val"
+
+[[methods]]
+type = "glee"                       # GLEE_pi98 (dowolna liczba klas)
+pi = 0.98
+
+[[methods]]
+type = "margin"                     # MARGIN_k0
+k = 0.0
+
+[[methods]]
+type = "margin"                     # MARGIN_k0_val
+k = 0.0
+calib = "val"
+
+[[methods]]
+type = "own"                        # OWN_lam0.5_pi98
+pi = 0.98
+lam = 0.5
+
+[[methods]]
+type = "own"                        # OWN_lam0.5_pi98_glee
+pi = 0.98
+lam = 0.5
+glee = true
+
+[[methods]]
+type = "own"                        # OWN_lam0.5_pi98_pair
+pi = 0.98
+lam = 0.5
+multiclass = "pair"
+
+[[methods]]
+type = "own"                        # OWN_lam0.5_pi98_glee_pair
+pi = 0.98
+lam = 0.5
+glee = true
+multiclass = "pair"

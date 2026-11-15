@@ -1,10 +1,28 @@
-"""Konfiguracja projektu wczytana z config.toml w katalogu głównym repozytorium."""
+"""Konfiguracja projektu wczytana z config.toml w katalogu głównym repozytorium albo z pliku
+wskazanego zmienną środowiskową QI_CONFIG (np. configs/classification_all.toml)."""
+import os
 import tomllib
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = ROOT / "config.toml"
+
+
+def _config_path() -> Path:
+    """QI_CONFIG (względem bieżącego katalogu albo katalogu głównego repozytorium), domyślnie
+    config.toml w katalogu głównym."""
+    value = os.environ.get("QI_CONFIG")
+    if not value:
+        return ROOT / "config.toml"
+    path = Path(value)
+    if not path.is_absolute() and not path.exists():
+        path = ROOT / path
+    if not path.is_file():
+        raise FileNotFoundError(f"QI_CONFIG: config file not found: {value}")
+    return path.resolve()
+
+
+CONFIG_PATH = _config_path()
 
 with CONFIG_PATH.open("rb") as f:
     _config: dict[str, Any] = tomllib.load(f)

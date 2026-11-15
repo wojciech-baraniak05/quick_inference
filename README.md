@@ -83,7 +83,8 @@ Then activate the environment:
 
 ## Configuration
 
-Settings live in [`config.toml`](config.toml) in the repository root.
+Settings live in [`config.toml`](config.toml) in the repository root (or in the file given by
+the `QI_CONFIG` environment variable, see [Running the benchmark](#running-the-benchmark)).
 [`src/config.py`](src/config.py) reads the file and exposes the values as module constants:
 
 ```python
@@ -337,6 +338,23 @@ python testing.py
 ```
 
 You can also run its `# %%` cells interactively in VS Code.
+
+To use another settings file, pass it as an argument (or set the `QI_CONFIG` environment
+variable, which also works for the `# %%` cells; a relative path is tried against the current
+directory, then the repository root). [`configs/classification_all.toml`](configs/classification_all.toml)
+is the full classification run: every classification method and variant (`rf_sklearn`,
+`full_voting`, IB pruning full / pair / random order, HYPER full / pair / validation, GLEE,
+margin out-of-bag / validation, own method plain / GLEE / pair) on all binary and multiclass
+synthetic datasets, 10 seeds, `val_size = 0.1`, and unlimited-depth trees for the two
+`*_multi_features` datasets. The `full` IB, HYPER and own variants are skipped with a message
+on datasets with more than 3 classes; the `_pair` variants cover those.
+
+```sh
+cd src
+python testing.py ../configs/classification_all.toml
+python -m analysis.summary ../data/results/classification_all.parquet
+```
+
 Results go to one Parquet file, `data/<benchmark.out_file>`, with one row per (run, mode,
 method): the run's settings (`dataset`, `seed`, `n_trees`, `max_depth`, ...), the method's
 `pi` / `delta`, `time_s`, and the raw per-sample arrays `y_true`, `y_pred`, `n_used`. Each
