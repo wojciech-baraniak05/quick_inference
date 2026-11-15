@@ -14,12 +14,12 @@ from sklearn.metrics import (accuracy_score, f1_score, mean_absolute_error, prec
 from methods import FullAveraging, FullVoting, SklearnRF
 from methods.base import FloatArray, IntArray, Labels, Task
 
-from .forest_methods import methods_rf
+from .forest_methods import ForestMethods
 from .modes import SUPPORTED_MODES, Mode, check_modes
 
 
-class benchmark:
-    """Uruchamia metody z methods_rf w wybranych scenariuszach i porównuje je jakością,
+class Benchmark:
+    """Uruchamia metody z ForestMethods w wybranych scenariuszach i porównuje je jakością,
     zgodnością z metodami odniesienia oraz czasem predykcji."""
 
     REF_RF = SklearnRF.name
@@ -27,10 +27,10 @@ class benchmark:
     REF_FULL_REG = FullAveraging.name
     REFS = (REF_RF, REF_FULL, REF_FULL_REG)
 
-    def __init__(self, models: methods_rf, X_test: ArrayLike, y_test: ArrayLike,
+    def __init__(self, models: ForestMethods, X_test: ArrayLike, y_test: ArrayLike,
                  metadata: Mapping[str, Any] | None = None, n_online: int = 500,
                  n_repeats: int = 1) -> None:
-        self.models: methods_rf | None = models
+        self.models: ForestMethods | None = models
         self.X_test: NDArray[Any] | None = np.asarray(X_test)
         self.y_test: Labels = np.asarray(y_test)
         self.n_test = len(self.X_test)
@@ -53,7 +53,7 @@ class benchmark:
         self.times: dict[Mode, FloatArray] = {}
         self._results: dict[Mode, pd.DataFrame] = {}
 
-    def _snapshot_methods(self, models: methods_rf) -> None:
+    def _snapshot_methods(self, models: ForestMethods) -> None:
         self.names = list(models.names)
         self.pi_levels = {m.name: m.pi for m in models.methods if m.pi is not None}
         self.deltas = {m.name: m.delta for m in models.methods if m.delta is not None}
@@ -63,8 +63,8 @@ class benchmark:
 
     def run(self, modes: Sequence[str] = SUPPORTED_MODES) -> Self:
         if self.models is None or self.X_test is None:
-            raise RuntimeError("benchmark po release() nie ma już lasu ani X_test; "
-                               "utwórz nowy benchmark")
+            raise RuntimeError("Benchmark has no forest or X_test after release(); "
+                               "create a new Benchmark")
         self._snapshot_methods(self.models)         # metody mogły dojść po __init__
         self.metadata["methods"] = self.names
         if self.deltas:
@@ -88,7 +88,7 @@ class benchmark:
     def results(self, mode: Mode = "batch") -> pd.DataFrame:
         """Tabela wyników, wiersz na metodę; liczona raz na scenariusz."""
         if mode not in self.Y_pred:
-            raise RuntimeError(f"brak wyników dla '{mode}', najpierw wywołaj run()")
+            raise RuntimeError(f"no results for '{mode}'; call run() first")
         if mode not in self._results:
             self._results[mode] = self._compute_results(mode)
         return self._results[mode].copy()
@@ -97,8 +97,8 @@ class benchmark:
         Y, N, times = self.Y_pred[mode], self.N_used[mode], self.times[mode]
         y_true = self.y_test[: self._n(mode)]
         # kolumny agree_* i speedup_vs_* są tylko dla metod odniesienia obecnych w zbiorze
-        regresja = self.task == "regression"
-        full = self.REF_FULL_REG if regresja else self.REF_FULL
+        is_regression = self.task == "regression"
+        full = self.REF_FULL_REG if is_regression else self.REF_FULL
         refs = {k: i for k, i in (("rf", self._ref(self.REF_RF)),
                                   ("full", self._ref(full))) if i is not None}
         n = Y.shape[1]
@@ -106,7 +106,7 @@ class benchmark:
         rows = []
         for i, name in enumerate(self.names):
             y = Y[i]
-            if regresja:
+            if is_regression:
                 row = {
                     "method": name,
                     "mae": mean_absolute_error(y_true, y),
@@ -116,12 +116,12 @@ class benchmark:
                 for k, j in refs.items():
                     # zgodność: różnica względem odniesienia w tolerancji metody; metody
                     # bez tolerancji muszą dać ten sam wynik (z dokładnością arytmetyki)
-                    roznica = np.abs(y - Y[j])
-                    zgodne = (roznica <= self.deltas[name] if name in self.deltas
+                    diff = np.abs(y - Y[j])
+                    agree = (diff <= self.deltas[name] if name in self.deltas
                               else np.isclose(y, Y[j]))
-                    row[f"agree_{k}"] = zgodne.mean()
-                    row[f"mad_{k}"] = roznica.mean()
-                    row[f"maxdiff_{k}"] = roznica.max()
+                    row[f"agree_{k}"] = agree.mean()
+                    row[f"mad_{k}"] = diff.mean()
+                    row[f"maxdiff_{k}"] = diff.max()
             else:
                 row = {
                     "method": name,
@@ -146,14 +146,14 @@ class benchmark:
         return pd.DataFrame(rows).set_index("method")
 
     def summary(self) -> None:
-        print("metadane:")
-        for k, v in self.metadata.items():
-            print(f"  {k}: {v}")
+        # methods pomijamy: są wierszami tabel niżej
+        meta = ", ".join(f"{k}={v}" for k, v in self.metadata.items() if k != "methods")
+        print(f"metadata: {meta}")
         with pd.option_context("display.width", 200, "display.max_columns", None,
                                "display.float_format", "{:.4f}".format):
             for mode in self.Y_pred:
                 n = self.Y_pred[mode].shape[1]
-                print(f"\n[{mode}] ({n} próbek)")
+                print(f"\n[{mode}] n={n}")
                 print(self.results(mode))
 
     def to_dict(self) -> dict[str, Any]:

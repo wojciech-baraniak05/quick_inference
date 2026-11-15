@@ -1,9 +1,9 @@
 """Benchmark metod inferencji (pakiet methods) na wytrenowanych lasach; nie zna config.toml."""
-from .benchmark import benchmark
-from .data import DATA_DIR, train_forest, wczytaj, znajdz_zbiory
-from .forest_methods import methods_rf
+from .benchmark import Benchmark
+from .data import DATA_DIR, find_datasets, load_dataset, train_forest
+from .forest_methods import ForestMethods
 from .modes import SUPPORTED_MODES, Mode, check_modes
-from .suite import benchmark_suite
+from .suite import BenchmarkSuite
 
-__all__ = ["benchmark", "benchmark_suite", "methods_rf", "SUPPORTED_MODES", "Mode", "check_modes",
-           "DATA_DIR", "train_forest", "wczytaj", "znajdz_zbiory"]
+__all__ = ["Benchmark", "BenchmarkSuite", "ForestMethods", "SUPPORTED_MODES", "Mode",
+           "check_modes", "DATA_DIR", "find_datasets", "load_dataset", "train_forest"]

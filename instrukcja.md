@@ -64,11 +64,11 @@ z płaskim a priori): następny głos trafia do klasy `i` z prawdopodobieństwem
 Im więcej głosów ma klasa, tym bardziej prawdopodobne, że dostanie kolejny. To założenie
 ma sens, bo drzewa w lesie są wymienialne: każde jest uczone niezależnie na bootstrapie.
 
-### Rekurencja (`wygrana` w [src/generate_table_IB.py](src/generate_table_IB.py))
+### Rekurencja (`win_probability` w [src/methods/ib_pruning.py](src/methods/ib_pruning.py))
 
 ```
-wygrana(t) = [t_1 > max(reszta)]                        jeśli sum(t) == T
-wygrana(t) = Σ_i P(głos do i) · wygrana(t + e_i)        w przeciwnym razie
+win_probability(t) = [t_1 > max(reszta)]                        jeśli sum(t) == T
+win_probability(t) = Σ_i P(głos do i) · win_probability(t + e_i)        w przeciwnym razie
 ```
 
 Każdy stan zależy od stanów o jeden głos dalej, więc `lru_cache` liczy każdy stan tylko raz.
@@ -86,7 +86,7 @@ korzysta z dwóch własności, żeby ją zmniejszyć:
    razem z `t_1`. Wystarczy więc zapamiętać **próg**:
 
 ```
-prog[t_2, …, t_l] = najmniejsze t_1, przy którym P(wygrana) ≥ pi
+threshold[t_2, …, t_l] = najmniejsze t_1, przy którym P(wygrana) ≥ pi
                     (T + 1, jeśli przy tych t_2..t_l nie da się przerwać)
 ```
 
@@ -94,11 +94,11 @@ Tablica ma więc `l − 1` wymiarów zamiast `l`, a warunek stopu to:
 
 ```python
 t = sorted(glosy, reverse=True)
-stop = t[0] >= prog[tuple(t[1:])]
+stop = t[0] >= threshold[tuple(t[1:])]
 ```
 
 **Przykład** (`T501_L2_pi98.npz`, las 501 drzew, 2 klasy, `pi = 0.98`):
-`prog[:6] = [5, 7, 9, 11, 13, 14]`. Jeśli pierwsze 5 drzew zagłosowało jednogłośnie,
+`threshold[:6] = [5, 7, 9, 11, 13, 14]`. Jeśli pierwsze 5 drzew zagłosowało jednogłośnie,
 przerywamy. Przy jednym głosie przeciw trzeba 7 głosów za itd. Na zbiorze `binary_check`
 mediana liczby odpytanych drzew to **5**, a średnia ok. 23 (ok. 4,7% lasu).
 
@@ -122,13 +122,15 @@ stop, gdy P*(t, T) ≥ pi
 Przy jednostajnym `P(T)` to dokładnie IB pruning z rozdz. 2 (Stwierdzenie 3 w artykule).
 HYPER szacuje `P(T)` z danych:
 
-1. **Głosy out-of-bag** (`glosy_oob`): każdą próbkę uczącą oceniają tylko drzewa, które jej
+1. **Głosy out-of-bag** (`oob_votes`): każdą próbkę uczącą oceniają tylko drzewa, które jej
    nie widziały. Stąd `fit(rf, X_train)` potrzebuje danych uczących i lasu z `bootstrap=True`.
-2. **A priori** (`prior_z_glosow`): głosy próbki skalujemy do T drzew
+   Z `calib = "val"` zamiast tego głosują **wszystkie** drzewa na zbiorze walidacyjnym
+   (`val_votes`), którego las nie widział (rozdz. 5, `val_size`).
+2. **A priori** (`prior_from_votes`): głosy próbki skalujemy do T drzew
    (`T_i ≈ T · głosy_i / suma`), robimy histogram składów i wygładzamy go oknem o szerokości 5.
-3. **Tablica progów** (`tablica_hyper`): rekurencja wstecz po liczbie głosów,
+3. **Tablica progów** (`hyper_table`): rekurencja wstecz po liczbie głosów,
    `f(t) = Σ_i f(t + e_i)`, liczona warstwami w NumPy. A priori nie jest symetryczne, więc
-   **każda klasa prowadząca ma własną tablicę**: `prog[c, głosy pozostałych klas]`.
+   **każda klasa prowadząca ma własną tablicę**: `threshold[c, głosy pozostałych klas]`.
 
 Różnice względem IB pruning w praktyce:
 
@@ -145,8 +147,9 @@ Różnice względem IB pruning w praktyce:
 - `Hyper.expected_trees()` szacuje średnią liczbę drzew metodą Monte Carlo z samego a priori,
   bez danych testowych.
 
-Parametry w configu: `pi`, `n_prior` (ile losowych próbek uczących użyć do głosów OOB,
-domyślnie 20000) i `smooth` (okno wygładzania, 0 = bez).
+Parametry w configu: `pi`, `n_prior` (ile losowych próbek uczących albo walidacyjnych użyć
+do głosów, domyślnie 20000), `smooth` (okno wygładzania, 0 = bez) i `calib` (`"oob"`
+domyślnie albo `"val"`: zbiór walidacyjny, nazwa `HYPER_pi98_val`).
 
 ---
 
@@ -176,9 +179,9 @@ p̂ − ρ·δ > 0,5
 - dla wielu klas klasa prowadząca jest traktowana jak klasa 1, a druga w kolejności jak
   klasa 0: `p̂ = t_1 / (t_1 + t_2)`, `n = t_1 + t_2`.
 
-Tak jak w IB, regułę zamieniamy na **tablicę progów** (`tablica_glee`), tutaj jednowymiarową:
-`prog[t_2]` = najmniejsze `t_1`, przy którym wolno przerwać. Dla `T = 501`, `pi = 0.98`:
-`prog[:6] = [15, 14, 13, 12, 12, 13]`. Początkowe wartości wynikają z `min_votes = 15`
+Tak jak w IB, regułę zamieniamy na **tablicę progów** (`glee_table`), tutaj jednowymiarową:
+`threshold[t_2]` = najmniejsze `t_1`, przy którym wolno przerwać. Dla `T = 501`, `pi = 0.98`:
+`threshold[:6] = [15, 14, 13, 12, 12, 13]`. Początkowe wartości wynikają z `min_votes = 15`
 (15 głosów jednogłośnych albo 14 do 1 itd.), dalej decyduje już przedział ufności.
 
 Różnice względem IB i HYPER w praktyce:
@@ -216,11 +219,11 @@ M = (v_c − v_c*) / N
 
 **Faza offline** (`fit(rf, X_train, y_train)`), na zbiorze kalibracyjnym z etykietami:
 
-1. **Ranking drzew** (`ranking_drzew`). Domyślnie `mean_d_m`, czyli kryterium MeanD-M użyte
+1. **Ranking drzew** (`rank_trees`). Domyślnie `mean_d_m`, czyli kryterium MeanD-M użyte
    w eksperymentach artykułu: ocena drzewa to średni spadek marginesu próbek po usunięciu
-   tego jednego drzewa z zespołu (`spadek_marginesu`). Drzewa o największym spadku idą
+   tego jednego drzewa z zespołu (`margin_drop`). Drzewa o największym spadku idą
    pierwsze. Inne opcje: `accuracy` (trafność pojedynczego drzewa) i `none` (kolejność lasu).
-2. **Statystyki marginesu** (`statystyki_marginesu`): średnia `mu` i odchylenie standardowe
+2. **Statystyki marginesu** (`margin_stats`): średnia `mu` i odchylenie standardowe
    `sigma` marginesu próbek **poprawnie sklasyfikowanych**, a z nich liczba drzew:
 
    ```
@@ -238,7 +241,9 @@ Różnice względem IB, HYPER i GLEE w praktyce:
   obejmuje,
 - zbiór kalibracyjny to **dane uczące oceniane out-of-bag** (jak w HYPER), a nie połowa zbioru
   testowego jak w artykule. Dzięki temu cały zbiór testowy zostaje do pomiaru. Stąd `fit`
-  potrzebuje `X_train`, `y_train` i lasu z `bootstrap=True`,
+  potrzebuje `X_train`, `y_train` i lasu z `bootstrap=True`. Z `calib = "val"` kalibracja
+  idzie na zbiorze walidacyjnym odłożonym z danych uczących (bliżej artykułu: głosują
+  wszystkie drzewa, a margines jest dzielony przez `T`; nazwa `MARGIN_k0_val`),
 - `N*` rośnie ze średnim marginesem, więc na **łatwych** zbiorach (duże marginesy) metoda
   zostawia **więcej** drzew niż na trudnych. Przy `k = 0` i lesie 501 drzew to ok. 310–350
   drzew na sprawdzonych zbiorach binarnych, czyli wielokrotnie więcej niż IB przy zbliżonym
@@ -390,7 +395,7 @@ Albo w VS Code: otwórz [src/testing.py](src/testing.py) i uruchamiaj komórki `
 (Run Cell), wtedy obiekt `suite` zostaje w pamięci i można go dalej analizować.
 
 **Skrypty uruchamiamy z katalogu `src/`.** Moduły importują się nawzajem jako moduły
-najwyższego poziomu (`import config`, `from methods import …`, `from generate_table_IB import …`),
+najwyższego poziomu (`import config`, `from methods import …`, `from methods.ib_pruning import …`),
 więc `src/` musi być w `sys.path`. Wyjątkiem są skrypty w `src/data_generate/`, które same
 dopisują ścieżkę i można je uruchamiać z katalogu głównego.
 
@@ -402,17 +407,20 @@ dopisują ścieżkę i można je uruchamiać z katalogu głównego.
 config.toml ──► config.py (stałe) ──► testing.py
                                          │
    dla każdego pliku z benchmark.datasets:
-       wczytaj(plik) → X, y
+       load_dataset(path) → X, y
        dla każdego seeda z benchmark.seeds:
            train_test_split(test_size, random_state=seed)
-           train_forest(n_trees, max_depth, seed)        ← trening na wszystkich rdzeniach
+           [val_size > 0] train_test_split(X_train → X_train, X_val)
+                                                         ← zbiór walidacyjny dla calib = "val"
+           train_forest(n_trees, max_depth, seed)        ← trening na wszystkich rdzeniach;
+                                                           [forest] + per_dataset dla zbioru
            build_methods([[methods]])                    ← NOWE instancje dla tego lasu
-           methods_rf.add_method(m) → m.fit(rf, X_train, y_train)
+           ForestMethods.add_method(m) → m.fit(rf, X_train, y_train, X_val, y_val)
                                                          ← np. dobór tablicy IB do T i l, a priori HYPER,
                                                            ranking i N* metody MARGIN
-           benchmark.run(modes)                          ← batch i/lub online, pomiar czasu
-           benchmark.release()                           ← zwalnia las i dane, wyniki zostają
-           suite.add(benchmark)                          ← od razu zapisuje NPZ przebiegu i CSV
+           Benchmark.run(modes)                          ← batch i/lub online, pomiar czasu
+           Benchmark.release()                           ← zwalnia las i dane, wyniki zostają
+           suite.add(Benchmark)                          ← od razu zapisuje NPZ przebiegu i CSV
    suite.summary()                                       ← tabele na ekran
    sprawdzenie: czy agree_full ≥ pi w każdym przebiegu
    suite.save()                                          ← CSV + NPZ (komplet, na koniec)
@@ -426,7 +434,7 @@ Warstwy kodu:
 | metody | [src/methods/](src/methods/) | *jak* przewidywać; każda metoda zwraca predykcję i liczbę odpytanych drzew |
 | benchmark | [src/benchmarking/](src/benchmarking/) | *jak mierzyć*; nie wie nic o `config.toml` |
 | skrypt | [src/testing.py](src/testing.py) | łączy config z benchmarkiem |
-| tablice IB | [src/generate_table_IB.py](src/generate_table_IB.py) | liczenie i zapis tablic progów |
+| tablice IB | [src/methods/ib_pruning.py](src/methods/ib_pruning.py) | liczenie i zapis tablic progów |
 | dane | [src/data_generate/](src/data_generate/) | generowanie i pobieranie zbiorów |
 
 ---
@@ -446,13 +454,17 @@ drop_columns = ["year", "CO"]         # kolumny zbiorów, które nie są cechami
 modes    = ["batch", "online"]
 seeds    = [1, 2, 3]                  # seed = podział train/test ORAZ las
 test_size = 0.3
+val_size  = 0.0                       # > 0: zbiór walidacyjny dla calib = "val" (część całego zbioru)
 n_online  = 500                       # pierwsze n_online próbek X_test w trybie online
 n_repeats = 1                         # pomiar czasu: mediana z n_repeats uruchomień
 sklearn_soft_voting = true            # czy dodać rf_sklearn (i kolumny *_rf)
 
 [forest]
 n_trees   = 501
-max_depth = 5                         # usuń klucz → drzewa bez limitu głębokości
+max_depth = 5                         # "none" albo brak klucza → drzewa bez limitu głębokości
+
+[forest.per_dataset.binary_multi_features]   # nadpisanie dla jednego zbioru (nazwa pliku bez .parquet)
+max_depth = "none"                    # klucze n_trees / max_depth; brak klucza → wartość z [forest]
 
 [[methods]]                           # jeden blok = jedna metoda
 type = "full_voting"
@@ -467,6 +479,7 @@ pi = 0.98                             # → tablica T{n_trees}_L{l}_pi98.npz
 [[methods]]
 type = "hyper"                        # a priori z głosów out-of-bag, bez pliku z tablicą
 pi = 0.98
+# calib = "val"                       # a priori z głosów na zbiorze walidacyjnym (też w own i margin)
 
 [[methods]]
 type = "glee"                         # gaussowski przedział ufności (COMET), bez pliku i bez danych
@@ -503,6 +516,11 @@ Zasady:
   klasy jako argumenty (`IBPruning(pi=0.98)`). Literówka w nazwie parametru daje czytelny błąd.
 - Nazwy metod muszą być unikalne. Dwa bloki `ib_pruning` z tym samym `pi` wymagają różnych `name`.
 - `rf_sklearn` **nie** dodaje się przez `[[methods]]`, tylko przez `sklearn_soft_voting`.
+- `calib = "val"` (w `hyper`, `own`, `margin`) potrzebuje `val_size > 0`; bez tego metoda jest
+  pomijana z komunikatem. `val_size` to część **całego** zbioru odkładana z danych uczących
+  przed treningiem lasu: przy `test_size = 0.3` i `val_size = 0.1` las uczy się na 60% danych,
+  i to **wszystkie** metody (także out-of-bag), bo las jest wspólny. Zbiór testowy się nie
+  zmienia. Wariant `_val` może stać obok wersji out-of-bag w jednym benchmarku.
 - Nowy parametr: dopisz go do `config.toml` **i** wystaw jako stałą w [src/config.py](src/config.py).
 
 ---
@@ -519,7 +537,7 @@ Każdy plik to jedna tabela:
 | `target` | int (klasy) / float (regresja) | etykieta |
 | *(opcjonalnie)* inne nazwy, np. `year`, `CO` w `gas_turbine` | dowolny | kolumny dodatkowe |
 
-`wczytaj()` ([src/benchmarking/data.py](src/benchmarking/data.py)) bierze **wszystkie kolumny
+`load_dataset()` ([src/benchmarking/data.py](src/benchmarking/data.py)) bierze **wszystkie kolumny
 poza `target`** i poza wymienionymi w `benchmark.drop_columns` jako cechy, a kolumny
 nieliczbowe zamienia na kody całkowite (`astype("category").cat.codes`). Zwraca `X` typu
 `float` i `y`.
@@ -570,8 +588,8 @@ zmniejsza rozmiar pliku.
 Generowanie (z `src/`):
 
 ```python
-from generate_table_IB import generuj_tablice
-generuj_tablice(T=501, l=2, pi=0.95)       # → data/tablice/T501_L2_pi95.npz
+from methods import generate_table
+generate_table(T=501, l=2, pi=0.95)       # → data/tablice/T501_L2_pi95.npz
 ```
 
 Czasy dla odniesienia: `T=501, l=2` ok. 0,2 s; `T=501, l=3` ok. 83 s.
@@ -658,10 +676,11 @@ od tego, czy IB pomylił się względem pełnego głosowania.
 |---|---|
 | Wpływ poziomu ufności | kilka bloków `ib_pruning` z różnym `pi` (0,9 / 0,95 / 0,98 / 0,99); najpierw wygeneruj tablice |
 | Wpływ rozmiaru lasu | `forest.n_trees` (+ tablice dla nowego T); osobne `out_dir` dla każdego T |
-| Wpływ głębokości drzew | `forest.max_depth` (np. 5, 10, brak) |
+| Wpływ głębokości drzew | `forest.max_depth` (np. 5, 10, `"none"`); dla jednego zbioru `[forest.per_dataset.<zbiór>]` |
 | Zbiory wieloklasowe | `datasets = ["generated/multiclass/multi_check.parquet", …]` i tablica `L3` |
 | Duże/rzeczywiste dane | `datasets = ["real_data/binary"]`; uwaga na rozmiar SUSY (rozdz. 8) |
 | Rzetelne czasy | `n_repeats = 3–5`, większe `n_online` |
+| Out-of-bag a zbiór walidacyjny | `val_size = 0.1` i bloki `hyper` / `own` / `margin` w dwóch wersjach: bez `calib` i z `calib = "val"` |
 
 **Zawsze zmieniaj `out_dir`** przy nowym eksperymencie. Wyniki są nadpisywane bez pytania.
 
@@ -745,7 +764,7 @@ wcześniejszą wersję generatora (np. `CATEGORICAL_FEATURES`), której w
    Przy `T = 501` IB pruning z tablicą dla wszystkich klas działa więc tylko dla 2 i 3 klas
    (HYPER i `own` mają ten sam limit). Dla zbiorów z 4+ klasami (`multi_small`, `shuttle`,
    `multi_many_classes`, …) metoda zostanie **pominięta z ostrzeżeniem**
-   (`pomijam IB_pi98: brak tablicy …`), a reszta benchmarku pójdzie dalej.
+   (`skip IB_pi98 on <zbiór> (shown once): threshold table not found …`), a reszta benchmarku pójdzie dalej.
    Żeby badać więcej klas, ustaw w bloku metody `multiclass = "pair"` (rozdz. 2d) albo
    zmniejsz `n_trees`.
 
@@ -805,21 +824,21 @@ niewielki (jedna permutacja na próbkę).
 
 **Tablica liczona offline, nie w locie.** Progi zależą tylko od `(T, l, pi)`, a nie od danych.
 Liczenie rekurencji przy każdej predykcji byłoby zbyt wolne, a odczyt z tablicy to O(1).
-Stąd osobny moduł [generate_table_IB.py](src/generate_table_IB.py) i pliki `.npz` w repozytorium.
+Stąd generator w [ib_pruning.py](src/methods/ib_pruning.py) i pliki `.npz` w repozytorium.
 
 **Tablica progów zamiast tablicy True/False.** Dzięki monotoniczności jeden wymiar mniej
 (z `(T+1)^l` do `(T+1)^(l-1)`). Dzięki sortowaniu głosów korzystamy tylko z jednej
-„permutacji”, a `lru_cache` w `wygrana` ma więcej trafień. `sys.setrecursionlimit` jest
+„permutacji”, a `lru_cache` w `win_probability` ma więcej trafień. `sys.setrecursionlimit` jest
 potrzebne, bo głębokość rekurencji to ok. T. `cache_clear()` na końcu zwalnia pamięć
 po wygenerowaniu tablicy.
 
 **Wektorowy IB w trybie batch (`predict_batch`).** Zamiast pętli po próbkach jest pętla po
-drzewach z malejącym zbiorem `aktywne`. Każde drzewo dostaje jednym wywołaniem wszystkie
+drzewach z malejącym zbiorem `active`. Każde drzewo dostaje jednym wywołaniem wszystkie
 jeszcze niezdecydowane próbki, co ogranicza narzut wywołań sklearn. Pętla kończy się,
 gdy wszystkie próbki są zdecydowane. Pętle `predict_batch` i `predict_one` są wspólne dla
 IB, HYPER i GLEE (klasa `SequentialPruning` w [base.py](src/methods/base.py)); metody różnią się
-tylko regułą stopu. `czy_stop_wektorowo` sortuje głosy w każdym wierszu
-i czyta progi wektorowo przez `prog[tuple(t[:, 1:].T)]`.
+tylko regułą stopu. `stop_ib` sortuje głosy w każdym wierszu
+i czyta progi wektorowo przez `threshold[tuple(t[:, 1:].T)]`.
 
 **`FixedVoting`: głosowanie stałej listy drzew.** `full_voting` i MARGIN robią to samo:
 każdą próbkę ocenia ta sama lista drzew `self.voters` (wszystkie drzewa albo `N*` pierwszych
@@ -830,6 +849,9 @@ MARGIN i `full_voting` różni się tylko liczbą drzew.
 **Głosy out-of-bag w osobnym module.** HYPER i MARGIN kalibrują się na danych uczących tak,
 żeby każdą próbkę oceniały tylko drzewa, które jej nie widziały. Wspólny kod (indeksy
 bootstrapu, losowa podpróbka, sprawdzenie danych) jest w [oob.py](src/methods/oob.py).
+Wersja na zbiorze walidacyjnym (`calib = "val"`) jest obok, w
+[validation.py](src/methods/validation.py), i daje głosy oraz predykcje w tym samym
+formacie, więc reszta metody się nie zmienia.
 
 **Dwa tryby: `batch` i `online`.** Odpowiadają dwóm realnym zastosowaniom (przetwarzanie
 wsadowe vs serwowanie pojedynczych zapytań), w których ten sam algorytm daje bardzo różne
@@ -849,7 +871,7 @@ po to, by **błąd w configu wyszedł od razu**, a nie po godzinie liczenia.
 `testing.py` łapie `FileNotFoundError`/`ValueError` z `add_method`, wypisuje ostrzeżenie
 i liczy pozostałe metody. Jedno wywołanie może więc objąć zbiory o różnej liczbie klas.
 
-**`methods_rf(rf, methods=[])`.** Domyślnie `methods_rf` dodaje `rf_sklearn` i `full_voting`
+**`ForestMethods(rf, methods=[])`.** Domyślnie `ForestMethods` dodaje `rf_sklearn` i `full_voting`
 (wygodne przy pracy w notebooku). Skrypt startuje od pustej listy, żeby zestaw metod
 wynikał wyłącznie z configu.
 
@@ -868,11 +890,13 @@ można też używać bez configu, np. w notebooku.
 i `N_used` dla każdej próbki, więc później można policzyć nowe metryki **bez ponownego
 uruchamiania** benchmarku.
 
-**Polskie i angielskie nazwy.** Kod powstawał stopniowo: nowsze, „publiczne” elementy mają
-nazwy angielskie (`benchmark`, `methods_rf`, `InferenceMethod`), a funkcje pomocnicze
-i obliczeniowe polskie (`wczytaj`, `znajdz_zbiory`, `czy_stop`, `prog`, `generuj_tablice`).
-Klasy `benchmark`, `methods_rf`, `benchmark_suite` mają nazwy małymi literami z przyczyn
-historycznych.
+**Konwencja nazw.** Wszystkie identyfikatory w kodzie (klasy, funkcje, zmienne) są
+angielskie, tak samo jak wszystko, co kod wypisuje (`print` i komunikaty błędów), a komentarze
+i docstringi są polskie. Klasy mają nazwy w PascalCase
+(`Benchmark`, `BenchmarkSuite`, `ForestMethods`, `InferenceMethod`), funkcje i zmienne
+w snake_case (`load_dataset`, `find_datasets`, `stop_ib`, `threshold`, `generate_table`).
+Wyjątek: klucz `prog` w plikach `.npz` z tablicami progów został bez zmian, żeby pasowały
+istniejące tablice w `data/tablice/`.
 
 ---
 
@@ -909,7 +933,8 @@ historycznych.
    gdzie `n_used` to liczba odpytanych drzew. `fit(rf)` z klasy bazowej ustawia
    `self.trees` (lista `FastTree`, rozdz. 9), `self.classes`, `self.T`, `self.l`. Nadpisz go (wołając `super().fit(rf)`),
    jeśli metoda potrzebuje przygotowania pod konkretny las. Sygnatura to
-   `fit(rf, X_train=None, y_train=None)`: benchmark przekazuje dane uczące lasu.
+   `fit(rf, X_train=None, y_train=None, X_val=None, y_val=None)`: benchmark przekazuje dane
+   uczące lasu i zbiór walidacyjny (`None` przy `val_size = 0`).
    Metoda z wczesnym stopem może dziedziczyć po `SequentialPruning` i podać samo
    `_stop_batch(votes)`. Metoda głosująca stałą listą drzew (jak powyższy przykład) może
    dziedziczyć po `FixedVoting` i w `fit` ustawić samo `self.voters`.
@@ -937,7 +962,7 @@ historycznych.
 |---|---|
 | uruchomić benchmark | `cd src && python testing.py` |
 | zmienić zbiory / las / metody | edytuj [config.toml](config.toml) |
-| nową tablicę IB | `from generate_table_IB import generuj_tablice; generuj_tablice(T, l, pi)` (z `src/`) |
+| nową tablicę IB | `from methods import generate_table; generate_table(T, l, pi)` (z `src/`) |
 | badać zbiory z 4+ klasami | `multiclass = "pair"` w blokach `ib_pruning`, `hyper`, `own` |
 | uruchomić regresję | `task = "regression"`, `datasets = ["generated/regression"]`, nowy `out_dir` |
 | sprawdzić, czy IB dotrzymuje `pi` | kolumna `agree_full` i komunikat na końcu `testing.py` |
