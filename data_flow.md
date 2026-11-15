@@ -21,7 +21,7 @@ sequenceDiagram
   R-->>T: 7 unfitted methods (config validation)
   T->>D: find_datasets(DATASETS)
   D-->>T: paths of data/generated/binary/*.parquet
-  T->>S: BenchmarkSuite(keys = dataset, seed, out_file = data/results/binary.parquet)
+  T->>S: BenchmarkSuite(out_file = data/results/binary.parquet)
 
   loop every .parquet file
     T->>D: load_dataset(path, DROP_COLUMNS)
@@ -56,13 +56,29 @@ sequenceDiagram
       S->>B: to_frame()
       B-->>S: raw rows, one per mode and method
       Note over S: store_runs: adds the rows to data/results/binary.parquet<br/>(same settings, mode and method replace the stored row)
-      T->>B: results(MODES[0])
-      B-->>T: metrics table for the progress line (metrics.method_metrics)
+      Note over T: progress line: dataset, seed, time
     end
   end
 
-  T->>S: summary(), results(mode), save()
-  S-->>T: aggregated tables for the agree_full vs pi check
+  T->>S: save()
+  Note over S: adds runs whose write failed earlier
+```
+
+Metrics are not part of the benchmark. They are computed afterwards, from the file, by
+`src/analysis` (`python -m analysis.summary` from `src/`):
+
+```mermaid
+sequenceDiagram
+  participant U as python -m<br/>analysis.summary
+  participant P as data/results/<br/>binary.parquet
+  participant A as analysis<br/>metrics
+
+  U->>P: pd.read_parquet
+  P-->>U: raw rows (settings, mode, method, time_s, y_true, y_pred, n_used)
+  U->>A: compute_metrics(raw)
+  Note over A: per run and mode: method_metrics<br/>(accuracy, f1, agree_*, speedup_vs_*, trees_*)
+  A-->>U: same rows with metric columns
+  Note over U: summary: means over seeds per dataset (and varying settings) and method<br/>check_pi: runs with agree_full < pi
 ```
 
 ## What travels along the arrows
@@ -75,6 +91,6 @@ sequenceDiagram
 | `X_val, y_val` | a second `train_test_split` of the training part when `val_size > 0` (`None` otherwise); the forest never sees them | `fit` of methods with `calib = "val"` |
 | `rf` | `data.train_forest` on `X_train, y_train` | `ForestMethods`, then every method's `fit` |
 | Stop thresholds (`threshold`, `voters`) | each method's `fit`: IB from a `.npz` table, HYPER/OWN/MARGIN from out-of-bag predictions on `X_train` (or, with `calib = "val"`, predictions on `X_val`), GLEE from `T` and `pi` | `predict_batch` / `predict_one` |
-| `Y_pred, N_used, times` (one row per method) | `ForestMethods.run` on `X_test` | `Benchmark.results` and `Benchmark.to_frame` |
-| Raw rows (settings, `pi`, `delta`, `time_s`, `y_true`, `y_pred`, `n_used`) | `Benchmark.to_frame()` | `store_runs`, which writes them to the results `.parquet` |
-| Metrics table (accuracy, f1, `agree_*`, `speedup_vs_*`, `trees_*`) | `metrics.method_metrics`: in memory via `Benchmark.results(mode)`, from the file via `compute_metrics` | `BenchmarkSuite.summary()`, the progress line and the `agree_full` vs `pi` check in `testing.py`; analysis |
+| `Y_pred, N_used, times` (one row per method) | `ForestMethods.run` on `X_test` | `Benchmark.to_frame` |
+| Raw rows (settings, `pi`, `delta`, `time_s`, `y_true`, `y_pred`, `n_used`) | `Benchmark.to_frame()` | `store_runs` (`benchmarking/storage.py`), which writes them to the results `.parquet` |
+| Metrics table (accuracy, f1, `agree_*`, `speedup_vs_*`, `trees_*`) | `analysis.compute_metrics` from the results file | `analysis.summary`: tables and the `agree_full` vs `pi` check; own analysis |
