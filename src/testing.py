@@ -15,7 +15,7 @@ if not 0 <= cfg.VAL_SIZE < 1 - cfg.TEST_SIZE:
     raise ValueError(f"val_size must be in [0, 1 - test_size), got {cfg.VAL_SIZE} "
                      f"(test_size = {cfg.TEST_SIZE})")
 REFS = Benchmark.REFS
-OUT_DIR = DATA_DIR / cfg.OUT_DIR
+OUT_FILE = DATA_DIR / cfg.OUT_FILE
 # walidacja configu; bloki [[methods]] innego zadania niż cfg.TASK są pomijane
 names = [m.name for m in build_methods(cfg.METHODS, cfg.SKLEARN_SOFT_VOTING, cfg.TASK)]
 datasets = find_datasets(cfg.DATASETS)
@@ -37,8 +37,8 @@ print(f"per run [{MODES[0]}]: t = mean trees used, agree = agreement with the fu
       f"x = speedup vs the full forest")
 
 # %%
-# out_dir: każdy przebieg jest zapisywany od razu po policzeniu (runs/*.npz + tabele .csv)
-suite = BenchmarkSuite(keys=("dataset", "seed"), out_dir=OUT_DIR)
+# out_file: każdy przebieg jest dopisywany do pliku .parquet od razu po policzeniu
+suite = BenchmarkSuite(keys=("dataset", "seed"), out_file=OUT_FILE)
 skipped: set[tuple[str, str]] = set()      # (metoda, błąd) już zgłoszone: raz, nie co seed i zbiór
 
 for path in datasets:
@@ -121,7 +121,7 @@ for mode in suite.modes:
         print(f"  {name} (pi={pi}):\n{below.to_string()}")
 
 # %%
-suite.save()                        # przebiegi są już zapisane; to odświeża komplet plików
-print(f"saved {len(suite)} runs + tables to {OUT_DIR}")
+suite.save()                        # przebiegi są już zapisane; to dopisuje ewentualne zaległe
+print(f"saved {len(suite)} runs to {OUT_FILE}")
 
 # %%

@@ -1,20 +1,16 @@
 """Benchmark metod jednego lasu na jednym zbiorze testowym (opis: implementacja.md, rozdz. 9)."""
-import json
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Self
 
 import numpy as np
 import pandas as pd
 from numpy.typing import ArrayLike, NDArray
-from sklearn.metrics import (accuracy_score, f1_score, mean_absolute_error, precision_score,
-                             r2_score, recall_score, root_mean_squared_error)
 
-from methods import FullAveraging, FullVoting, SklearnRF
 from methods.base import FloatArray, IntArray, Labels, Task
 
 from .forest_methods import ForestMethods
+from .metrics import REF_FULL, REF_FULL_REG, REF_RF, method_metrics
 from .modes import SUPPORTED_MODES, Mode, check_modes
 
 
@@ -22,9 +18,9 @@ class Benchmark:
     """Uruchamia metody z ForestMethods w wybranych scenariuszach i porównuje je jakością,
     zgodnością z metodami odniesienia oraz czasem predykcji."""
 
-    REF_RF = SklearnRF.name
-    REF_FULL = FullVoting.name                      # w regresji: REF_FULL_REG
-    REF_FULL_REG = FullAveraging.name
+    REF_RF = REF_RF
+    REF_FULL = REF_FULL                             # w regresji: REF_FULL_REG
+    REF_FULL_REG = REF_FULL_REG
     REFS = (REF_RF, REF_FULL, REF_FULL_REG)
 
     def __init__(self, models: ForestMethods, X_test: ArrayLike, y_test: ArrayLike,
@@ -82,68 +78,15 @@ class Benchmark:
         self.X_test = None
         return self
 
-    def _ref(self, name: str) -> int | None:
-        return self.names.index(name) if name in self.names else None
-
     def results(self, mode: Mode = "batch") -> pd.DataFrame:
-        """Tabela wyników, wiersz na metodę; liczona raz na scenariusz."""
+        """Tabela wyników, wiersz na metodę; liczona raz na scenariusz (metrics.py)."""
         if mode not in self.Y_pred:
             raise RuntimeError(f"no results for '{mode}'; call run() first")
         if mode not in self._results:
-            self._results[mode] = self._compute_results(mode)
+            self._results[mode] = method_metrics(
+                self.names, self.y_test[: self._n(mode)], self.Y_pred[mode],
+                self.N_used[mode], self.times[mode], self.T, self.task, self.deltas)
         return self._results[mode].copy()
-
-    def _compute_results(self, mode: Mode) -> pd.DataFrame:
-        Y, N, times = self.Y_pred[mode], self.N_used[mode], self.times[mode]
-        y_true = self.y_test[: self._n(mode)]
-        # kolumny agree_* i speedup_vs_* są tylko dla metod odniesienia obecnych w zbiorze
-        is_regression = self.task == "regression"
-        full = self.REF_FULL_REG if is_regression else self.REF_FULL
-        refs = {k: i for k, i in (("rf", self._ref(self.REF_RF)),
-                                  ("full", self._ref(full))) if i is not None}
-        n = Y.shape[1]
-
-        rows = []
-        for i, name in enumerate(self.names):
-            y = Y[i]
-            if is_regression:
-                row = {
-                    "method": name,
-                    "mae": mean_absolute_error(y_true, y),
-                    "rmse": root_mean_squared_error(y_true, y),
-                    "r2": r2_score(y_true, y),
-                }
-                for k, j in refs.items():
-                    # zgodność: różnica względem odniesienia w tolerancji metody; metody
-                    # bez tolerancji muszą dać ten sam wynik (z dokładnością arytmetyki)
-                    diff = np.abs(y - Y[j])
-                    agree = (diff <= self.deltas[name] if name in self.deltas
-                              else np.isclose(y, Y[j]))
-                    row[f"agree_{k}"] = agree.mean()
-                    row[f"mad_{k}"] = diff.mean()
-                    row[f"maxdiff_{k}"] = diff.max()
-            else:
-                row = {
-                    "method": name,
-                    "accuracy": accuracy_score(y_true, y),
-                    "precision": precision_score(y_true, y, average="macro", zero_division=0),
-                    "recall": recall_score(y_true, y, average="macro", zero_division=0),
-                    "f1": f1_score(y_true, y, average="macro", zero_division=0),
-                }
-                for k, j in refs.items():
-                    row[f"agree_{k}"] = (y == Y[j]).mean()
-            row["time_s"] = times[i]
-            row["ms_per_sample"] = times[i] / n * 1e3
-            for k, j in refs.items():
-                row[f"speedup_vs_{k}"] = times[j] / times[i]
-            row.update(
-                trees_mean=N[i].mean(),
-                trees_median=np.median(N[i]),
-                trees_max=N[i].max(),
-                trees_frac=N[i].mean() / self.T,
-            )
-            rows.append(row)
-        return pd.DataFrame(rows).set_index("method")
 
     def summary(self) -> None:
         # methods pomijamy: są wierszami tabel niżej
@@ -156,19 +99,18 @@ class Benchmark:
                 print(f"\n[{mode}] n={n}")
                 print(self.results(mode))
 
-    def to_dict(self) -> dict[str, Any]:
-        d = {"metadata": json.dumps(self.metadata, default=str),
-             "names": np.array(self.names),
-             "classes": self.classes,
-             "y_test": self.y_test}
-        for mode in self.Y_pred:
-            d[f"Y_pred_{mode}"] = self.Y_pred[mode]
-            d[f"N_used_{mode}"] = self.N_used[mode]
-            d[f"times_{mode}"] = self.times[mode]
-        return d
-
-    def save(self, path: str | Path) -> Path:
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(path, **self.to_dict())
-        return path
+    def to_frame(self) -> pd.DataFrame:
+        """Surowe wyniki w układzie pliku wyników: wiersz na (scenariusz, metoda), kolumny to
+        metadane przebiegu, mode, method, pi, delta, time_s i tablice y_true, y_pred, n_used.
+        Metryk tu nie ma: liczy je metrics.compute_metrics."""
+        # listy i słowniki metadanych (methods, deltas) są już wierszami i kolumnami pi, delta
+        run = {k: v for k, v in self.metadata.items() if not isinstance(v, (list, dict))}
+        rows = []
+        for mode, Y in self.Y_pred.items():
+            y_true = self.y_test[: Y.shape[1]]
+            for i, name in enumerate(self.names):
+                rows.append({**run, "mode": mode, "method": name,
+                             "pi": self.pi_levels.get(name), "delta": self.deltas.get(name),
+                             "time_s": float(self.times[mode][i]), "y_true": y_true,
+                             "y_pred": Y[i], "n_used": self.N_used[mode][i]})
+        return pd.DataFrame(rows)

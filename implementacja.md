@@ -636,12 +636,16 @@ z metodami, które odpytują drzewa po kolei, jest uczciwe.
 - `Benchmark` trzyma własne kopie tego, czego potrzebują wyniki: `names`, `T`, `classes`,
   `pi_levels` (nazwa metody → `pi`). Są odświeżane na początku `run()`, bo metody mogły
   dojść po utworzeniu benchmarku.
-- `release()` zwalnia las, dane uczące i `X_test`. `results()`, `summary()` i `save()`
+- `release()` zwalnia las, dane uczące i `X_test`. `results()`, `summary()` i `to_frame()`
   działają dalej, `run()` zgłasza błąd. Ma to znaczenie, gdy wiele benchmarków jest
   trzymanych naraz w `BenchmarkSuite`: bez tego każdy trzymałby swój las i dane do końca
   przebiegu.
-- `results(mode)` liczy metryki raz na scenariusz i zwraca kopię zapamiętanej tabeli.
-  Ponowne `run()` unieważnia zapamiętaną tabelę.
+- `results(mode)` liczy metryki (`metrics.method_metrics`, rozdz. 9.5) raz na scenariusz
+  i zwraca kopię zapamiętanej tabeli. Ponowne `run()` unieważnia zapamiętaną tabelę.
+- `to_frame()` daje surowe wyniki w układzie pliku wyników: wiersz na (scenariusz, metoda),
+  skalarne metadane jako kolumny, `pi` i `delta` metody, `time_s` i tablice `y_true`,
+  `y_pred`, `n_used`. Listy i słowniki metadanych (`methods`, `deltas`) są pomijane, bo
+  opisują je wiersze i kolumny `pi`, `delta`.
 
 ### 9.3a. Regresja w benchmarku
 
@@ -666,14 +670,38 @@ jako `deltas`. Jest potrzebne, bo `delta_std` daje w każdym przebiegu inną tol
   `("dataset", "seed")`). **Ostatni klucz to powtórzenie**, po którym uśrednia
   `aggregate()`.
 - `modes` zwraca tylko scenariusze, które mają wyniki we wszystkich benchmarkach.
-- Z `out_dir` w konstruktorze każde `add()` zapisuje `.npz` przebiegu i pisze od nowa
-  tabele `.csv`. Tabele idą przez plik tymczasowy i podmianę, więc przerwanie w trakcie
-  zapisu nie zostawia uciętego pliku. Błąd zapisu tabel (np. plik otwarty w Excelu) nie
-  przerywa benchmarku: wyniki przebiegu są już w `.npz`, a tabele zostaną zapisane przy
-  następnym `add()` albo w `save()`.
-- Nazwa pliku przebiegu składa się z kluczy: wartość `dataset` bez przedrostka, pozostałe
-  jako `<klucz><wartość>`, np. `binary_small_seed1.npz`.
+- Z `out_file` w konstruktorze każde `add()` dopisuje przebieg do pliku Parquet
+  (`store_runs`). Błąd zapisu (np. plik zablokowany przez inny program) nie przerywa
+  benchmarku: przebieg czeka w `_unsaved` i jest dopisywany przy następnym `add()` albo
+  w `save()`.
+- `results()`, `aggregate()` i `summary()` działają na przebiegach w pamięci, czyli z
+  bieżącego uruchomienia. Wszystkie zapisane przebiegi są w pliku (rozdz. 9.5).
 - Nie ma wznawiania: ponowne uruchomienie liczy wszystko od początku.
+
+### 9.5. Plik wyników i metryki
+
+`store_runs(path, frames)` czyta plik (jeśli jest), dla każdej ramki z `to_frame()` usuwa
+wiersze o tej samej tożsamości i dopisuje nowe, a potem zapisuje całość przez plik
+tymczasowy i podmianę. Tożsamość wiersza to wartości wszystkich kolumn przebiegu (spoza
+`ROW_COLS` i `ARRAY_COLS`, czyli `dataset`, `seed` i ustawienia) oraz `mode` i `method`;
+brak kolumny (starszy przebieg) liczy się jako `None`. Stąd:
+
+- powtórzenie z tymi samymi ustawieniami zastępuje wiersze metod, które policzyło,
+  a wiersze innych metod tego przebiegu zostają,
+- przebieg z innymi ustawieniami (np. `max_depth`, `val_size`) dopisuje się obok,
+- `date` nie należy do tożsamości: w jednym przebiegu mogą być wiersze z różnych
+  uruchomień. Las i podział zależą tylko od seeda i ustawień, więc predykcje są
+  porównywalne; czasy już mniej.
+
+Plik ma tylko dane surowe. `metrics.py` liczy z nich metryki:
+
+- `method_metrics(names, y_true, Y, N, times, T, task, deltas)`: tabela jednego przebiegu
+  w jednym scenariuszu, wiersz na metodę. Woła ją też `Benchmark.results()`, więc w pamięci
+  i z pliku metryki liczy ten sam kod.
+- `compute_metrics(raw)`: dla tabeli z pliku grupuje wiersze po kolumnach przebiegu
+  i `mode`, składa tablice w macierze i woła `method_metrics`. Zwraca te same wiersze
+  w tej samej kolejności, z metrykami zamiast tablic. Ta sama metoda dwa razy w jednej
+  grupie oznacza, że brakuje kolumn rozróżniających przebiegi, i daje błąd.
 
 Formaty plików wynikowych: [instrukcja.md, rozdz. 6.3](instrukcja.md).
 

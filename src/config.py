@@ -16,7 +16,10 @@ _bench = _config["benchmark"]
 TASK: str = _bench.get("task", "classification")    # "classification" | "regression"
 DATASETS: list[str] = list(_bench["datasets"])
 DROP_COLUMNS: list[str] = list(_bench.get("drop_columns", []))  # kolumny, które nie są cechami
-OUT_DIR: str = _bench["out_dir"]
+if "out_dir" in _bench:
+    raise ValueError('[benchmark] out_dir was replaced by out_file (one Parquet file for all '
+                     'runs), e.g. out_file = "results/binary.parquet"')
+OUT_FILE: str = _bench["out_file"]                  # plik wyników .parquet, względem data/
 MODES: tuple[str, ...] = tuple(_bench["modes"])
 SEEDS: list[int] = [int(s) for s in _bench["seeds"]]
 TEST_SIZE: float = float(_bench["test_size"])
