@@ -1,12 +1,44 @@
 """Wyniki wielu benchmarków: wiele zbiorów danych i powtórzeń (opis: implementacja.md, rozdz. 9)."""
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Self
 
 import pandas as pd
 
 from .benchmark import Benchmark
+from .metrics import ARRAY_COLS, ROW_COLS
 from .modes import SUPPORTED_MODES, Mode
+
+
+def _run_ids(df: pd.DataFrame, cols: list[str]) -> list[tuple[object, ...]]:
+    """Tożsamość przebiegu w każdym wierszu: krotka wartości cols, brak wartości jako None
+    (np. kolumna, której starsze przebiegi nie miały)."""
+    vals = df.reindex(columns=cols).astype(object)
+    vals = vals.where(vals.notna(), None)
+    return list(map(tuple, vals.to_numpy()))
+
+
+def store_runs(path: str | Path, frames: Iterable[pd.DataFrame]) -> Path:
+    """Dopisuje przebiegi (Benchmark.to_frame()) do pliku Parquet. Wiersz zastępuje zapisany
+    wiersz o tych samych ustawieniach przebiegu (dataset, seed, n_trees...; bez date),
+    scenariuszu i metodzie. Pozostałe wiersze zostają, także metody, których nowy przebieg
+    nie liczył. Zapis przez plik tymczasowy i podmianę."""
+    path = Path(path)
+    table = pd.read_parquet(path) if path.exists() else None
+    for new in frames:                              # po kolei: późniejszy wygrywa
+        if table is not None:
+            run_cols = sorted({*table.columns, *new.columns} - {*ROW_COLS, *ARRAY_COLS})
+            cols = [*run_cols, "mode", "method"]
+            replaced = set(_run_ids(new, cols))
+            table = table[[run not in replaced for run in _run_ids(table, cols)]]
+        table = new if table is None else pd.concat([table, new], ignore_index=True)
+    if table is None:
+        raise ValueError("store_runs: no runs to store")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    table.to_parquet(tmp, index=False, compression="zstd")
+    tmp.replace(path)
+    return path
 
 
 class BenchmarkSuite:
@@ -18,25 +50,27 @@ class BenchmarkSuite:
                     "ms_per_sample", "speedup_vs_rf", "speedup_vs_full", "trees_mean", "trees_frac"]
 
     def __init__(self, keys: Sequence[str] = ("dataset", "seed"),
-                 out_dir: str | Path | None = None) -> None:
+                 out_file: str | Path | None = None) -> None:
         self.keys = list(keys)
-        self.out_dir = None if out_dir is None else Path(out_dir)
+        self.out_file = None if out_file is None else Path(out_file)
         self.runs: list[Benchmark] = []
+        self._unsaved: list[Benchmark] = []         # przebiegi, których zapis się nie udał
 
     def add(self, b: Benchmark) -> Self:
-        """Dodaje benchmark; z out_dir od razu zapisuje jego .npz i aktualne tabele .csv."""
+        """Dodaje benchmark; z out_file od razu dopisuje go do pliku wyników."""
         missing = [k for k in self.keys if k not in b.metadata]
         if missing:
             raise ValueError(f"benchmark metadata is missing keys: {missing}")
         self.runs.append(b)
-        if self.out_dir is not None:
-            b.save(self._run_path(self.out_dir, b))
+        if self.out_file is not None:
+            self._unsaved.append(b)
             try:
-                self._save_tables(self.out_dir)
+                store_runs(self.out_file, [u.to_frame() for u in self._unsaved])
+                self._unsaved.clear()
             except OSError as e:
-                # np. plik .csv otwarty w Excelu; wyniki przebiegu są już w .npz,
-                # a tabele zostaną zapisane przy następnym add() albo w save()
-                print(f"  result tables not written ({e}); retried on next add()/save()")
+                # np. plik zablokowany przez inny program; wyniki są w pamięci i zostaną
+                # dopisane przy następnym add() albo w save()
+                print(f"  results not written ({e}); retried on next add()/save()")
         return self
 
     def __len__(self) -> int:
@@ -83,27 +117,13 @@ class BenchmarkSuite:
                 print(f"\n[{mode}] mean over all {len(self.runs)} runs:")
                 print(self.aggregate(mode, stats="mean", overall=True)[shown])
 
-    def _run_path(self, out_dir: Path, b: Benchmark) -> Path:
-        name = "_".join(f"{k}{b.metadata[k]}" if k != "dataset" else str(b.metadata[k])
-                         for k in self.keys)
-        return out_dir / "runs" / f"{name}.npz"
-
-    def _save_tables(self, out_dir: Path) -> None:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        for mode in self.modes:
-            for name, df in ((f"results_{mode}.csv", self.results(mode)),
-                              (f"aggregate_{mode}.csv", self.aggregate(mode))):
-                # zapis przez plik tymczasowy: przerwanie nie zostawia uciętej tabeli
-                tmp = out_dir / f"{name}.tmp"
-                df.to_csv(tmp)
-                tmp.replace(out_dir / name)
-
-    def save(self, out_dir: str | Path | None = None) -> Path:
-        """Zapisuje .npz każdego benchmarku i tabele .csv; domyślnie do out_dir z konstruktora."""
-        target = self.out_dir if out_dir is None else Path(out_dir)
+    def save(self, out_file: str | Path | None = None) -> Path:
+        """Dopisuje wszystkie przebiegi do pliku wyników (domyślnie out_file z konstruktora);
+        zapisane już przebiegi są zastępowane, więc wynik jest ten sam."""
+        target = self.out_file if out_file is None else Path(out_file)
         if target is None:
-            raise ValueError("out_dir not given (here or in BenchmarkSuite())")
-        for b in self.runs:
-            b.save(self._run_path(target, b))
-        self._save_tables(target)
+            raise ValueError("out_file not given (here or in BenchmarkSuite())")
+        store_runs(target, [b.to_frame() for b in self.runs])
+        if target == self.out_file:
+            self._unsaved.clear()
         return target

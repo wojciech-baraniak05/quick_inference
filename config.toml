@@ -10,8 +10,8 @@ seed = 1   # seed generowania zbiorów syntetycznych
 [benchmark]
 # zadanie: "classification" (las klasyfikacyjny, metody klasyfikacyjne) albo "regression"
 # (las regresyjny, metody *_reg i full_averaging). Bloki [[methods]] drugiego zadania są
-# pomijane, więc jeden plik może opisywać oba; zmienia się task, datasets i out_dir,
-# np. task = "regression", datasets = ["generated/regression"], out_dir = "results/regression"
+# pomijane, więc jeden plik może opisywać oba; zmienia się task, datasets i out_file, np.
+# task = "regression", datasets = ["generated/regression"], out_file = "results/regression.parquet"
 task = "classification"
 
 # zbiory danych: ścieżki względem data/; folder = wszystkie pliki *.parquet w nim,
@@ -19,7 +19,10 @@ task = "classification"
 # 10 syntetycznych zbiorów binarnych; SUSY (5 mln wierszy, liczy się długo) dochodzi po
 # dopisaniu "real_data/binary" na końcu listy
 datasets = ["generated/binary"]
-out_dir = "results/binary"          # względem data/
+# plik wyników (względem data/): wiersz na (przebieg, scenariusz, metoda) z ustawieniami
+# i surowymi predykcjami. Przebieg z tymi samymi ustawieniami zastępuje zapisany, z innymi
+# (np. inne max_depth, val_size) dopisuje się obok. Metryki: benchmarking.compute_metrics
+out_file = "results/binary.parquet"
 # kolumny zbiorów, które nie są cechami (pomijane, jeśli są w pliku); w gas_turbine
 # to rok pomiaru i drugi cel
 drop_columns = ["year", "CO"]

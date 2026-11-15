@@ -93,7 +93,7 @@ from config import SEED, MODES, METHODS
 | Section | Keys |
 |---|---|
 | top level | `seed`: random seed for synthetic dataset generation |
-| `[benchmark]` | `task` (`classification` or `regression`, default `classification`), `datasets` (folders or files under `data/`), `drop_columns` (dataset columns that are not features), `out_dir`, `modes` (`batch`, `online`), `seeds`, `test_size`, `val_size` (share of the whole dataset held out of training for `calib = "val"`, default 0), `n_online`, `n_repeats`, `sklearn_soft_voting` |
+| `[benchmark]` | `task` (`classification` or `regression`, default `classification`), `datasets` (folders or files under `data/`), `drop_columns` (dataset columns that are not features), `out_file` (results `.parquet` under `data/`), `modes` (`batch`, `online`), `seeds`, `test_size`, `val_size` (share of the whole dataset held out of training for `calib = "val"`, default 0), `n_online`, `n_repeats`, `sklearn_soft_voting` |
 | `[forest]` | `n_trees`, `max_depth` (omit or `"none"` for unlimited depth) |
 | `[forest.per_dataset.<name>]` | optional per-dataset override of `n_trees` and/or `max_depth`; `<name>` is the dataset file name without `.parquet`, missing keys fall back to `[forest]` |
 | `[[methods]]` | one block per benchmarked method: `type` (classification: `full_voting`, `ib_pruning`, `hyper`, `glee`, `margin`, `own`; regression: `full_averaging`, `ib_reg`, `glee_reg`, `own_reg`), optional `name` and `enabled`, plus the method's parameters |
@@ -327,7 +327,7 @@ selected `modes`:
 
 The default config compares `rf_sklearn`, `full_voting`, `IB_pi98`, `HYPER_pi98`, `GLEE_pi98`, `MARGIN_k0` and `OWN_lam0.5_pi98` on the binary synthetic
 datasets (501 trees, depth 5, seeds 1–3). It also holds the regression blocks; to run them,
-set `task = "regression"`, point `datasets` at `generated/regression` and change `out_dir`.
+set `task = "regression"`, point `datasets` at `generated/regression` and change `out_file`.
 
 Run it from `src/`:
 
@@ -337,10 +337,20 @@ python testing.py
 ```
 
 You can also run its `# %%` cells interactively in VS Code.
-Results are written to `data/<benchmark.out_dir>/`. Each (dataset, seed) run is saved as soon
-as it finishes (`runs/<dataset>_seed<seed>.npz`, and the `.csv` tables are rewritten), so an
-interrupted benchmark keeps what it has computed. After a run the forest and the data are
-released (`Benchmark.release()`); only the predictions and timings stay in memory.
+Results go to one Parquet file, `data/<benchmark.out_file>`, with one row per (run, mode,
+method): the run's settings (`dataset`, `seed`, `n_trees`, `max_depth`, ...), the method's
+`pi` / `delta`, `time_s`, and the raw per-sample arrays `y_true`, `y_pred`, `n_used`. Each
+(dataset, seed) run is added as soon as it finishes, so an interrupted benchmark keeps what it
+has computed. A row replaces a stored row with the same settings, mode and method; runs with
+other settings are added next to it. After a run the forest and the data are released
+(`Benchmark.release()`); only the predictions and timings stay in memory.
+
+The file holds no metrics. They are computed from it, so a fixed or new metric covers old runs:
+
+```python
+from benchmarking import compute_metrics
+m = compute_metrics(pd.read_parquet("../data/results/binary.parquet"))   # from src/
+```
 
 Reported per method: accuracy, macro precision/recall/F1, agreement with sklearn and with
 full voting (`agree_rf`, `agree_full`), prediction time, speed-up, and trees queried per sample
@@ -430,7 +440,8 @@ src/
     modes.py                 batch / online scenarios
     forest_methods.py        ForestMethods: methods fitted to one forest
     benchmark.py             Benchmark: one forest, one test set
-    suite.py                 BenchmarkSuite: many datasets and seeds
+    metrics.py               metrics from raw predictions (compute_metrics for the results file)
+    suite.py                 BenchmarkSuite: many datasets and seeds; writes the results file
     data.py                  dataset loading, forest training
   testing.py                 benchmark run driven by config.toml
   test_dt.ipynb              scratch notebook for forest/tree experiments

@@ -378,7 +378,7 @@ przypadkiem bliskie, i `agree_full` spada wyraźnie poniżej `pi` (0,80–0,94 w
 przebiegach). `own_reg`: domyślnie 1.
 
 Żeby uruchomić regresję, ustaw w `[benchmark]`: `task = "regression"`, `datasets` na
-zbiory regresyjne i inny `out_dir` (rozdz. 5).
+zbiory regresyjne i inny `out_file` (rozdz. 5).
 
 ---
 
@@ -420,10 +420,10 @@ config.toml ──► config.py (stałe) ──► testing.py
                                                            ranking i N* metody MARGIN
            Benchmark.run(modes)                          ← batch i/lub online, pomiar czasu
            Benchmark.release()                           ← zwalnia las i dane, wyniki zostają
-           suite.add(Benchmark)                          ← od razu zapisuje NPZ przebiegu i CSV
+           suite.add(Benchmark)                          ← od razu dopisuje przebieg do pliku .parquet
    suite.summary()                                       ← tabele na ekran
    sprawdzenie: czy agree_full ≥ pi w każdym przebiegu
-   suite.save()                                          ← CSV + NPZ (komplet, na koniec)
+   suite.save()                                          ← dopisuje zaległe przebiegi (np. po błędzie zapisu)
 ```
 
 Warstwy kodu:
@@ -449,7 +449,7 @@ seed = 1                              # tylko dla generate_datasets.py
 [benchmark]
 task = "classification"               # albo "regression": las regresyjny i metody *_reg
 datasets = ["generated/binary"]       # foldery (wszystkie *.parquet) lub pojedyncze pliki, względem data/
-out_dir  = "results/binary"           # względem data/; NADPISYWANY przy każdym uruchomieniu
+out_file = "results/binary.parquet"   # względem data/; wszystkie przebiegi w jednym pliku (rozdz. 6.3)
 drop_columns = ["year", "CO"]         # kolumny zbiorów, które nie są cechami
 modes    = ["batch", "online"]
 seeds    = [1, 2, 3]                  # seed = podział train/test ORAZ las
@@ -511,7 +511,7 @@ Zasady:
 
 - `task` wybiera rodzaj lasu. Bloki `[[methods]]` drugiego zadania są pomijane, więc oba
   zestawy metod mogą stać w jednym pliku. Przełączenie na regresję to zmiana `task`,
-  `datasets` i `out_dir`.
+  `datasets` i `out_file`.
 - Wszystkie pola bloku `[[methods]]` poza `type`, `enabled` przekazywane są do konstruktora
   klasy jako argumenty (`IBPruning(pi=0.98)`). Literówka w nazwie parametru daje czytelny błąd.
 - Nazwy metod muszą być unikalne. Dwa bloki `ib_pruning` z tym samym `pi` wymagają różnych `name`.
@@ -594,22 +594,58 @@ generate_table(T=501, l=2, pi=0.95)       # → data/tablice/T501_L2_pi95.npz
 
 Czasy dla odniesienia: `T=501, l=2` ok. 0,2 s; `T=501, l=3` ok. 83 s.
 
-### 6.3. Wyniki (`data/<out_dir>/`)
+### 6.3. Wyniki (`data/<out_file>`)
 
+Wszystkie przebiegi są w jednym pliku Parquet (domyślnie `data/results/binary.parquet`),
+wiersz na (przebieg, scenariusz, metoda). Plik trzyma tylko dane surowe; metryki liczy
+z nich `compute_metrics` przy analizie, więc poprawka albo nowa metryka obejmuje też stare
+przebiegi.
+
+| Kolumny | Znaczenie |
+|---|---|
+| `dataset`, `seed` | zbiór i powtórzenie |
+| `task`, `n_trees`, `max_depth`, `val_size`, `sklearn_soft_voting`, `T`, `l`, `n_test`, `n_online`, `n_repeats` | ustawienia przebiegu (metadane z `testing.py` i `Benchmark`) |
+| `mode`, `method` | scenariusz (`batch` / `online`) i metoda |
+| `pi`, `delta` | poziom ufności i tolerancja metody (puste, gdy metoda ich nie ma) |
+| `time_s` | czas predykcji wszystkich próbek scenariusza (mediana z `n_repeats`) |
+| `date` | kiedy policzono wiersz |
+| `y_true`, `y_pred`, `n_used` | tablice, wartość na próbkę: prawdziwa etykieta, predykcja, liczba odpytanych drzew; w trybie `online` pierwsze `n_online` próbek `X_test` |
+
+**Zapis.** Po każdym przebiegu (zbiór, seed) plik jest pisany od nowa przez plik
+tymczasowy i podmianę, więc przerwany benchmark zostawia policzone przebiegi. Nowy wiersz
+zastępuje zapisany wiersz z tymi samymi ustawieniami przebiegu, scenariuszem i metodą;
+reszta zostaje. Przebiegi z innymi ustawieniami (np. inne `max_depth` albo `val_size`)
+dopisują się obok, a metoda dodana później dołącza do zapisanych przebiegów tego samego
+zbioru i seeda. Nie ma wznawiania: ponowne uruchomienie liczy wszystko od początku.
+
+**Czytanie** (z `src/`):
+
+```python
+import numpy as np, pandas as pd
+from benchmarking import compute_metrics
+
+f = "../data/results/binary.parquet"
+raw = pd.read_parquet(f)
+m = compute_metrics(raw)              # te same wiersze, tablice zamienione na metryki
+m.query("mode == 'batch'").groupby(["dataset", "method"])[["accuracy", "trees_frac"]].mean()
+
+# część pliku: kolumny i wiersze wybrane przy czytaniu (reszta nie jest czytana z dysku)
+pd.read_parquet(f, columns=["dataset", "seed", "method", "time_s"],
+                filters=[("mode", "==", "batch"), ("dataset", "==", "imbalanced")])
+
+# dane per próbka, np. rozkład liczby drzew IB na jednym zbiorze, wszystkie seedy
+r = raw.query("mode == 'batch' and method == 'IB_pi98' and dataset == 'binary_small'")
+np.bincount(np.concatenate(r["n_used"].to_numpy()))
 ```
-results_batch.csv      jeden wiersz na (dataset, seed, method)
-results_online.csv
-aggregate_batch.csv    średnia i odch. std po seedach, wiersz na (dataset, method)
-aggregate_online.csv
-runs/<dataset>_seed<N>.npz   surowe predykcje jednego przebiegu
-```
 
-Pliki powstają na bieżąco: po każdym przebiegu (zbiór, seed) zapisywany jest jego `.npz`,
-a tabele `.csv` są pisane od nowa ze wszystkich dotychczasowych przebiegów. Przerwany
-benchmark zostawia więc wyniki policzonych przebiegów (nie ma jeszcze wznawiania: ponowne
-uruchomienie liczy wszystko od początku).
+`compute_metrics` potrzebuje kolumn `method`, `mode`, `time_s`, `T`, `task` i tablic
+(w regresji też `delta`). Przebiegi rozpoznaje po pozostałych kolumnach, więc dostaje całą
+tabelę albo tabelę zawężoną do części zbiorów, seedów lub scenariuszy. Metody filtruj
+dopiero w wyniku: bez wiersza `full_voting` pozostałe metody tracą `agree_full`
+i `speedup_vs_full`. Dla 100 przebiegów po 7 metod liczy ok. 3 s. Czasy metod policzonych
+w różnych uruchomieniach (różne `date`) porównuj ostrożnie.
 
-**Kolumny `results_*.csv`:**
+**Kolumny metryk** (`compute_metrics`, `Benchmark.results`, `BenchmarkSuite.results`):
 
 | Kolumna | Znaczenie |
 |---|---|
@@ -632,38 +668,15 @@ W regresji (`task = "regression"`) kolumny jakości i zgodności są inne:
 | `mad_rf`, `mad_full` | średnia różnica bezwzględna względem metody odniesienia |
 | `maxdiff_rf`, `maxdiff_full` | największa różnica bezwzględna |
 
-Kolumny czasu i liczby drzew są te same. W `runs/*.npz` `classes` jest puste, `Y_pred_*`
-to liczby, a metadane mają dodatkowo `task` i `deltas` (nazwa metody → tolerancja po `fit`).
+Kolumny czasu i liczby drzew są te same. W regresji `y_true` i `y_pred` to liczby,
+a `delta` to tolerancja metody po `fit`.
 
-`aggregate_*.csv` ma **dwa wiersze nagłówka** (metryka, statystyka), więc czytamy go tak:
+Średnią i odchylenie po seedach daje `groupby`, np.
+`m.groupby(["dataset", "method"])[["accuracy", "trees_frac"]].agg(["mean", "std"])`.
+`BenchmarkSuite.aggregate()` robi to samo, ale tylko dla przebiegów z bieżącego
+uruchomienia (te są w pamięci).
 
-```python
-pd.read_csv("aggregate_batch.csv", header=[0, 1], index_col=[0, 1])
-```
-
-**Zawartość `runs/*.npz`** (wiersz `i` macierzy = metoda `names[i]`):
-
-| Klucz | Kształt | Znaczenie |
-|---|---|---|
-| `metadata` | str (JSON) | dataset, seed, T, l, n_test, n_online, lista metod, data uruchomienia… |
-| `names` | `(n_metod,)` | nazwy metod |
-| `classes` | `(l,)` | etykiety klas |
-| `y_test` | `(n_test,)` | prawdziwe etykiety całego zbioru testowego |
-| `Y_pred_{mode}` | `(n_metod, n_próbek)` | predykcje |
-| `N_used_{mode}` | `(n_metod, n_próbek)` | liczba odpytanych drzew dla każdej próbki |
-| `times_{mode}` | `(n_metod,)` | czas w sekundach |
-
-W trybie `online` próbek jest `n_online`, czyli to pierwsze `n_online` elementów `y_test`.
-
-```python
-import json, numpy as np
-d = np.load("data/results/binary/runs/binary_small_seed1.npz")
-meta = json.loads(str(d["metadata"]))
-names = list(d["names"])
-n_ib = d["N_used_batch"][names.index("IB_pi98")]     # rozkład liczby drzew per próbka
-```
-
-`N_used` pozwala analizować np. histogram liczby drzew albo zależność „trudności” próbki
+`n_used` pozwala analizować np. histogram liczby drzew albo zależność „trudności” próbki
 od tego, czy IB pomylił się względem pełnego głosowania.
 
 ---
@@ -675,14 +688,18 @@ od tego, czy IB pomylił się względem pełnego głosowania.
 | Pytanie | Co zmienić w `config.toml` |
 |---|---|
 | Wpływ poziomu ufności | kilka bloków `ib_pruning` z różnym `pi` (0,9 / 0,95 / 0,98 / 0,99); najpierw wygeneruj tablice |
-| Wpływ rozmiaru lasu | `forest.n_trees` (+ tablice dla nowego T); osobne `out_dir` dla każdego T |
+| Wpływ rozmiaru lasu | `forest.n_trees` (+ tablice dla nowego T); wyniki dla każdego T trafiają do tego samego pliku (kolumna `n_trees`) |
 | Wpływ głębokości drzew | `forest.max_depth` (np. 5, 10, `"none"`); dla jednego zbioru `[forest.per_dataset.<zbiór>]` |
 | Zbiory wieloklasowe | `datasets = ["generated/multiclass/multi_check.parquet", …]` i tablica `L3` |
 | Duże/rzeczywiste dane | `datasets = ["real_data/binary"]`; uwaga na rozmiar SUSY (rozdz. 8) |
 | Rzetelne czasy | `n_repeats = 3–5`, większe `n_online` |
 | Out-of-bag a zbiór walidacyjny | `val_size = 0.1` i bloki `hyper` / `own` / `margin` w dwóch wersjach: bez `calib` i z `calib = "val"` |
 
-**Zawsze zmieniaj `out_dir`** przy nowym eksperymencie. Wyniki są nadpisywane bez pytania.
+`out_file` nie trzeba zmieniać przy nowym eksperymencie: ustawienia przebiegu są kolumnami
+pliku, więc przebiegi z innym `n_trees`, `max_depth` czy `val_size` dopisują się obok.
+Zastępowany jest tylko wiersz z tymi samymi ustawieniami, scenariuszem i metodą (np. po
+poprawce w kodzie). Osobny plik przydaje się, gdy chcesz zachować oba wyniki takiego
+powtórzenia.
 
 ### 7.2. Jak czytać wyniki
 
@@ -964,9 +981,9 @@ istniejące tablice w `data/tablice/`.
 | zmienić zbiory / las / metody | edytuj [config.toml](config.toml) |
 | nową tablicę IB | `from methods import generate_table; generate_table(T, l, pi)` (z `src/`) |
 | badać zbiory z 4+ klasami | `multiclass = "pair"` w blokach `ib_pruning`, `hyper`, `own` |
-| uruchomić regresję | `task = "regression"`, `datasets = ["generated/regression"]`, nowy `out_dir` |
+| uruchomić regresję | `task = "regression"`, `datasets = ["generated/regression"]`, `out_file = "results/regression.parquet"` |
 | sprawdzić, czy IB dotrzymuje `pi` | kolumna `agree_full` i komunikat na końcu `testing.py` |
-| zobaczyć, ile drzew trzeba | `trees_mean`, `trees_frac`; rozkład w `runs/*.npz` → `N_used_*` |
-| wczytać wyniki zbiorcze | `pd.read_csv(f, header=[0, 1], index_col=[0, 1])` |
-| nie stracić wyników | zmień `out_dir` przed każdym nowym eksperymentem |
+| zobaczyć, ile drzew trzeba | `trees_mean`, `trees_frac`; rozkład w kolumnie `n_used` pliku wyników |
+| wczytać wyniki | `compute_metrics(pd.read_parquet(f))` (rozdz. 6.3) |
+| zachować wynik powtórzenia z tymi samymi ustawieniami | inny `out_file`; inne ustawienia dopisują się same |
 | odtworzyć zbiory | `python src/data_generate/generate_datasets.py` (seed z `config.toml`) |
