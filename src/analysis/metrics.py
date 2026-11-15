@@ -1,4 +1,4 @@
-"""Metryki benchmarku liczone z surowych wyników (opis: implementacja.md, rozdz. 9.5).
+"""Metryki liczone z pliku wyników benchmarku (opis: implementacja.md, rozdz. 9.6).
 
 W pliku wyników są tylko dane surowe: predykcje, liczby drzew i czasy. Metryki liczy się
 z nich przy analizie, więc zmiana albo nowa metryka obejmuje też stare przebiegi."""
@@ -9,18 +9,14 @@ import pandas as pd
 from sklearn.metrics import (accuracy_score, f1_score, mean_absolute_error, precision_score,
                              r2_score, recall_score, root_mean_squared_error)
 
+from benchmarking import ARRAY_COLS, run_columns
 from methods import FullAveraging, FullVoting, SklearnRF
 from methods.base import FloatArray, IntArray, Labels
 
 REF_RF = SklearnRF.name
 REF_FULL = FullVoting.name                      # w regresji: REF_FULL_REG
 REF_FULL_REG = FullAveraging.name
-
-# kolumny pliku wyników, które zmieniają się w obrębie przebiegu (date też: metoda może być
-# policzona w późniejszym uruchomieniu); pozostałe (dataset, seed, ustawienia) są wspólne dla
-# przebiegu i odróżniają go od innych
-ARRAY_COLS = ["y_true", "y_pred", "n_used"]     # tablice: jedna wartość na próbkę
-ROW_COLS = ["mode", "method", "pi", "delta", "time_s", "date"]
+REFS = (REF_RF, REF_FULL, REF_FULL_REG)
 
 
 def method_metrics(names: Sequence[str], y_true: Labels, Y: Labels, N: IntArray,
@@ -83,14 +79,14 @@ def compute_metrics(raw: pd.DataFrame) -> pd.DataFrame:
     """Metryki dla tabeli z pliku wyników: te same wiersze, tablice zamienione na metryki.
 
     Potrzebne kolumny: method, mode, time_s, T, task, y_true, y_pred, n_used (w regresji też
-    delta). Przebiegi rozróżnia każda kolumna spoza ROW_COLS i ARRAY_COLS, więc najlepiej
+    delta). Przebiegi rozróżniają kolumny przebiegu (benchmarking.run_columns), więc najlepiej
     podać całą tabelę. Można ją zawęzić do części zbiorów, seedów albo scenariuszy, ale nie
     metod: bez wiersza full_voting metody tracą kolumny agree_full i speedup_vs_full."""
     missing = [c for c in ["method", "mode", "time_s", "T", "task", *ARRAY_COLS]
                if c not in raw.columns]
     if missing:
         raise ValueError(f"compute_metrics: missing columns {missing}")
-    run_cols = [c for c in raw.columns if c not in ROW_COLS + ARRAY_COLS]
+    run_cols = run_columns(raw)
     parts = []
     for _, g in raw.groupby([*run_cols, "mode"], sort=False, dropna=False):
         if g["method"].duplicated().any():

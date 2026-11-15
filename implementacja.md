@@ -629,19 +629,15 @@ z metodami, które odpytują drzewa po kolei, jest uczciwe.
 
 ### 9.3. `Benchmark`: jeden las, jeden zbiór testowy
 
+Benchmark nie liczy metryk: zbiera dane surowe, które idą do pliku wyników (rozdz. 9.5).
+Metryki liczy z pliku `src/analysis` (rozdz. 9.6).
+
 - Tryb `batch` używa całego `X_test`, tryb `online` pierwszych `n_online` próbek.
-- Kolumny porównania z metodą odniesienia (`agree_rf`, `speedup_vs_rf`, `agree_full`,
-  `speedup_vs_full`) są w wynikach tylko wtedy, gdy ta metoda jest w zbiorze, np. bez
-  `rf_sklearn` przy `sklearn_soft_voting = false`.
-- `Benchmark` trzyma własne kopie tego, czego potrzebują wyniki: `names`, `T`, `classes`,
-  `pi_levels` (nazwa metody → `pi`). Są odświeżane na początku `run()`, bo metody mogły
-  dojść po utworzeniu benchmarku.
-- `release()` zwalnia las, dane uczące i `X_test`. `results()`, `summary()` i `to_frame()`
-  działają dalej, `run()` zgłasza błąd. Ma to znaczenie, gdy wiele benchmarków jest
-  trzymanych naraz w `BenchmarkSuite`: bez tego każdy trzymałby swój las i dane do końca
-  przebiegu.
-- `results(mode)` liczy metryki (`metrics.method_metrics`, rozdz. 9.5) raz na scenariusz
-  i zwraca kopię zapamiętanej tabeli. Ponowne `run()` unieważnia zapamiętaną tabelę.
+- `Benchmark` trzyma własne kopie tego, czego potrzebuje zapis: `names`, `T`, `classes`,
+  `pi_levels` (nazwa metody → `pi`), `deltas` (nazwa metody → `delta`). Są odświeżane na
+  początku `run()`, bo metody mogły dojść po utworzeniu benchmarku.
+- `release()` zwalnia las, dane uczące i `X_test`. `to_frame()` działa dalej, `run()`
+  zgłasza błąd.
 - `to_frame()` daje surowe wyniki w układzie pliku wyników: wiersz na (scenariusz, metoda),
   skalarne metadane jako kolumny, `pi` i `delta` metody, `time_s` i tablice `y_true`,
   `y_pred`, `n_used`. Listy i słowniki metadanych (`methods`, `deltas`) są pomijane, bo
@@ -650,35 +646,19 @@ z metodami, które odpytują drzewa po kolei, jest uczciwe.
 ### 9.3a. Regresja w benchmarku
 
 `ForestMethods` rozpoznaje zadanie po typie lasu (`task`). Dla `RandomForestRegressor`
-`classes` jest pustą tablicą, `l = 0`, a `Y_pred` ma typ `float64`. Metodą odniesienia
-dla kolumn `*_full` jest `full_averaging` (`Benchmark.REF_FULL_REG`) zamiast `full_voting`.
+`classes` jest pustą tablicą, `l = 0`, a `Y_pred` ma typ `float64`. `delta` metody (po
+`fit`) trafia do kolumny `delta` pliku wyników. Jest potrzebne, bo `delta_std` daje
+w każdym przebiegu inną tolerancję. Metryki regresji: rozdz. 9.6.
 
-Kolumny jakości w regresji: `mae`, `rmse`, `r2`. Względem metod odniesienia:
+### 9.4. `BenchmarkSuite`: zapis wielu przebiegów
 
-- `agree_full`, `agree_rf`: odsetek próbek, dla których `|y - y_odniesienia| <= delta`
-  tej metody. To dopełnienie „odsetka przekroczeń tolerancji” z dokumentu, więc tak jak
-  w klasyfikacji porównuje się je z `pi`. Metody bez tolerancji (`rf_sklearn`,
-  `full_averaging`) muszą dać ten sam wynik z dokładnością arytmetyki (`np.isclose`),
-- `mad_*`, `maxdiff_*`: średnia i największa różnica bezwzględna.
-
-`Benchmark.deltas` (nazwa metody → `delta` po `fit`) trafia też do metadanych przebiegu
-jako `deltas`. Jest potrzebne, bo `delta_std` daje w każdym przebiegu inną tolerancję.
-
-### 9.4. `BenchmarkSuite`: wiele zbiorów i powtórzeń
-
-- Każdy benchmark jest identyfikowany wartościami kluczy z metadanych (domyślnie
-  `("dataset", "seed")`). **Ostatni klucz to powtórzenie**, po którym uśrednia
-  `aggregate()`.
-- `modes` zwraca tylko scenariusze, które mają wyniki we wszystkich benchmarkach.
-- Z `out_file` w konstruktorze każde `add()` dopisuje przebieg do pliku Parquet
-  (`store_runs`). Błąd zapisu (np. plik zablokowany przez inny program) nie przerywa
-  benchmarku: przebieg czeka w `_unsaved` i jest dopisywany przy następnym `add()` albo
-  w `save()`.
-- `results()`, `aggregate()` i `summary()` działają na przebiegach w pamięci, czyli z
-  bieżącego uruchomienia. Wszystkie zapisane przebiegi są w pliku (rozdz. 9.5).
+- `BenchmarkSuite(out_file)`: każde `add()` od razu dopisuje przebieg do pliku Parquet
+  (`store_runs`). Wyników nie trzyma w pamięci, tylko licznik (`len(suite)`).
+- Błąd zapisu (np. plik zablokowany przez inny program) nie przerywa benchmarku: ramka
+  przebiegu czeka w `_unsaved` i jest dopisywana przy następnym `add()` albo w `save()`.
 - Nie ma wznawiania: ponowne uruchomienie liczy wszystko od początku.
 
-### 9.5. Plik wyników i metryki
+### 9.5. Plik wyników (`benchmarking/storage.py`)
 
 `store_runs(path, frames)` czyta plik (jeśli jest), dla każdej ramki z `to_frame()` usuwa
 wiersze o tej samej tożsamości i dopisuje nowe, a potem zapisuje całość przez plik
@@ -693,17 +673,43 @@ brak kolumny (starszy przebieg) liczy się jako `None`. Stąd:
   uruchomień. Las i podział zależą tylko od seeda i ustawień, więc predykcje są
   porównywalne; czasy już mniej.
 
-Plik ma tylko dane surowe. `metrics.py` liczy z nich metryki:
+`run_columns(df)` zwraca kolumny przebiegu (wszystkie spoza `ROW_COLS` i `ARRAY_COLS`);
+korzysta z niej też analiza.
+
+Formaty plików wynikowych: [instrukcja.md, rozdz. 6.3](instrukcja.md).
+
+### 9.6. Analiza: metryki z pliku wyników (`src/analysis`)
+
+Pakiet `analysis` zależy od `benchmarking` (układ pliku) i `methods` (nazwy metod
+odniesienia), a nie odwrotnie: benchmark nie zna metryk.
+
+`metrics.py`:
 
 - `method_metrics(names, y_true, Y, N, times, T, task, deltas)`: tabela jednego przebiegu
-  w jednym scenariuszu, wiersz na metodę. Woła ją też `Benchmark.results()`, więc w pamięci
-  i z pliku metryki liczy ten sam kod.
+  w jednym scenariuszu, wiersz na metodę (wiersz `i` macierzy `Y`, `N` to metoda `names[i]`).
 - `compute_metrics(raw)`: dla tabeli z pliku grupuje wiersze po kolumnach przebiegu
   i `mode`, składa tablice w macierze i woła `method_metrics`. Zwraca te same wiersze
   w tej samej kolejności, z metrykami zamiast tablic. Ta sama metoda dwa razy w jednej
   grupie oznacza, że brakuje kolumn rozróżniających przebiegi, i daje błąd.
+- Kolumny porównania z metodą odniesienia (`agree_rf`, `speedup_vs_rf`, `agree_full`,
+  `speedup_vs_full`) są tylko wtedy, gdy ta metoda jest w przebiegu, np. bez `rf_sklearn`
+  przy `sklearn_soft_voting = false`. W regresji odniesieniem dla `*_full` jest
+  `full_averaging` (`REF_FULL_REG`) zamiast `full_voting`.
+- Regresja: `mae`, `rmse`, `r2`; `agree_*` to odsetek próbek, dla których
+  `|y - y_odniesienia| <= delta` tej metody (dopełnienie „odsetka przekroczeń tolerancji”
+  z dokumentu, więc tak jak w klasyfikacji porównuje się je z `pi`). Metody bez tolerancji
+  (`rf_sklearn`, `full_averaging`) muszą dać ten sam wynik z dokładnością arytmetyki
+  (`np.isclose`). `mad_*`, `maxdiff_*`: średnia i największa różnica bezwzględna.
 
-Formaty plików wynikowych: [instrukcja.md, rozdz. 6.3](instrukcja.md).
+`summary.py` (`python -m analysis.summary [plik]`, domyślnie `out_file` z configu):
+
+- `aggregate(m, by, mode, stats)`: statystyki metryk po seedach, wiersz na
+  (`by`..., metoda); `by=()` uśrednia po wszystkim.
+- `group_columns(raw)`: `dataset` i ustawienia, które zmieniają się w obrębie jakiegoś
+  zbioru (np. dwa `max_depth` w pliku), żeby przebiegi o różnych ustawieniach nie były
+  uśredniane razem.
+- `summary(m, by)`: tabele średnich dla każdego scenariusza (to, co wcześniej wypisywał
+  `testing.py`); `check_pi(m, by)`: przebiegi z `agree_full < pi`.
 
 ---
 

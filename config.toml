@@ -21,7 +21,8 @@ task = "classification"
 datasets = ["generated/binary"]
 # plik wyników (względem data/): wiersz na (przebieg, scenariusz, metoda) z ustawieniami
 # i surowymi predykcjami. Przebieg z tymi samymi ustawieniami zastępuje zapisany, z innymi
-# (np. inne max_depth, val_size) dopisuje się obok. Metryki: benchmarking.compute_metrics
+# (np. inne max_depth, val_size) dopisuje się obok. Metryk w pliku nie ma: liczy je
+# src/analysis, podsumowanie z src/: python -m analysis.summary
 out_file = "results/binary.parquet"
 # kolumny zbiorów, które nie są cechami (pomijane, jeśli są w pliku); w gas_turbine
 # to rok pomiaru i drugi cel

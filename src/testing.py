@@ -1,5 +1,6 @@
 # %%
-"""Benchmark metod inferencji; wszystkie ustawienia są w config.toml."""
+"""Benchmark metod inferencji; wszystkie ustawienia są w config.toml. Zapisuje surowe
+wyniki do pliku .parquet; metryki i podsumowanie: python -m analysis.summary."""
 import time
 
 from sklearn.model_selection import train_test_split
@@ -14,7 +15,6 @@ MODES = check_modes(cfg.MODES)
 if not 0 <= cfg.VAL_SIZE < 1 - cfg.TEST_SIZE:
     raise ValueError(f"val_size must be in [0, 1 - test_size), got {cfg.VAL_SIZE} "
                      f"(test_size = {cfg.TEST_SIZE})")
-REFS = Benchmark.REFS
 OUT_FILE = DATA_DIR / cfg.OUT_FILE
 # walidacja configu; bloki [[methods]] innego zadania niż cfg.TASK są pomijane
 names = [m.name for m in build_methods(cfg.METHODS, cfg.SKLEARN_SOFT_VOTING, cfg.TASK)]
@@ -33,12 +33,11 @@ for ds, params in cfg.FOREST_PER_DATASET.items():
     print(f"forest override {ds}: "
           f"{', '.join(f'{k}={v}' for k, v in cfg.forest_params(ds).items())}{note}")
 print(f"methods ({len(names)}): {', '.join(names)}")
-print(f"per run [{MODES[0]}]: t = mean trees used, agree = agreement with the full forest, "
-      f"x = speedup vs the full forest")
+print(f"results: {OUT_FILE}")
 
 # %%
 # out_file: każdy przebieg jest dopisywany do pliku .parquet od razu po policzeniu
-suite = BenchmarkSuite(keys=("dataset", "seed"), out_file=OUT_FILE)
+suite = BenchmarkSuite(OUT_FILE)
 skipped: set[tuple[str, str]] = set()      # (metoda, błąd) już zgłoszone: raz, nie co seed i zbiór
 
 for path in datasets:
@@ -83,45 +82,14 @@ for path in datasets:
                                 "sklearn_soft_voting": cfg.SKLEARN_SOFT_VOTING},
                       n_online=cfg.N_ONLINE, n_repeats=cfg.N_REPEATS)
         b.run(modes=MODES)
-        b.release()                 # suite trzyma wyniki do końca, lasu i danych nie musi
-        suite.add(b)
-
-        r = b.results(MODES[0])
-        parts = []
-        for name in r.index.difference(REFS, sort=False):
-            w = r.loc[name]
-            s = f"{name} t={w.trees_mean:.1f}"
-            if "agree_full" in w:
-                s += f" agree={w.agree_full:.3f} x{w.speedup_vs_full:.1f}"
-            parts.append(s)
+        b.release()                 # las i dane nie są już potrzebne
+        suite.add(b)                # od razu w pliku wyników
         elapsed = time.perf_counter() - start
-        print(f"{path.stem:<24} seed={seed:<2} {elapsed:3.0f}s | {' | '.join(parts)}")
-
-# %%
-suite.summary()
-
-# %%
-# przebiegi, w których zgodność metody z wczesnym stopem z pełnym lasem spadła poniżej jej pi
-# (klasyfikacja: ta sama klasa, regresja: różnica w tolerancji delta metody)
-pi_levels = {name: pi for b in suite.runs for name, pi in b.pi_levels.items()}
-for mode in suite.modes:
-    df = suite.results(mode)
-    if "agree_full" not in df:
-        print("agree_full check skipped: no full_voting / full_averaging in the benchmark")
-        break
-    counts, failed = [], []
-    for name, pi in pi_levels.items():
-        agree = df.xs(name, level="method")["agree_full"]
-        below = agree[agree < pi]
-        counts.append(f"{name} {len(below)}/{len(agree)}")
-        if len(below):
-            failed.append((name, pi, below))
-    print(f"[{mode}] runs with agree_full < pi: {', '.join(counts)}")
-    for name, pi, below in failed:
-        print(f"  {name} (pi={pi}):\n{below.to_string()}")
+        print(f"{path.stem:<24} seed={seed:<2} {elapsed:4.0f}s  {len(m.methods)} methods")
 
 # %%
 suite.save()                        # przebiegi są już zapisane; to dopisuje ewentualne zaległe
 print(f"saved {len(suite)} runs to {OUT_FILE}")
+print("metrics and summary: python -m analysis.summary")
 
 # %%

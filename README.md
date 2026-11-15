@@ -345,11 +345,16 @@ has computed. A row replaces a stored row with the same settings, mode and metho
 other settings are added next to it. After a run the forest and the data are released
 (`Benchmark.release()`); only the predictions and timings stay in memory.
 
-The file holds no metrics. They are computed from it, so a fixed or new metric covers old runs:
+The benchmark computes no metrics: `testing.py` only prints progress. Metrics are computed
+from the file by `src/analysis`, so a fixed or new metric covers old runs too. From `src/`:
+
+```sh
+python -m analysis.summary          # means over seeds per dataset and method, agree_full vs pi check
+```
 
 ```python
-from benchmarking import compute_metrics
-m = compute_metrics(pd.read_parquet("../data/results/binary.parquet"))   # from src/
+from analysis import compute_metrics
+m = compute_metrics(pd.read_parquet("../data/results/binary.parquet"))   # one row per run, mode, method
 ```
 
 Reported per method: accuracy, macro precision/recall/F1, agreement with sklearn and with
@@ -439,14 +444,17 @@ src/
   benchmarking/              benchmark machinery, independent of config.toml
     modes.py                 batch / online scenarios
     forest_methods.py        ForestMethods: methods fitted to one forest
-    benchmark.py             Benchmark: one forest, one test set
-    metrics.py               metrics from raw predictions (compute_metrics for the results file)
-    suite.py                 BenchmarkSuite: many datasets and seeds; writes the results file
+    benchmark.py             Benchmark: one forest, one test set (raw predictions, tree counts, times)
+    storage.py               the results file: one Parquet table, store_runs
+    suite.py                 BenchmarkSuite: adds each run to the results file
     data.py                  dataset loading, forest training
   testing.py                 benchmark run driven by config.toml
   test_dt.ipynb              scratch notebook for forest/tree experiments
   data_generate/
     generate_datasets.py     synthetic dataset generation
     data_download_real.py    real dataset download
-  analysis/                  exploratory notebooks (real datasets, generated configurations)
+  analysis/                  benchmark results and exploratory notebooks
+    metrics.py               metrics from the results file (compute_metrics)
+    summary.py               python -m analysis.summary: tables and the agree_full vs pi check
+    *.ipynb                  exploratory notebooks (real datasets, generated configurations)
 ```

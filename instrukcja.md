@@ -421,9 +421,10 @@ config.toml ──► config.py (stałe) ──► testing.py
            Benchmark.run(modes)                          ← batch i/lub online, pomiar czasu
            Benchmark.release()                           ← zwalnia las i dane, wyniki zostają
            suite.add(Benchmark)                          ← od razu dopisuje przebieg do pliku .parquet
-   suite.summary()                                       ← tabele na ekran
-   sprawdzenie: czy agree_full ≥ pi w każdym przebiegu
    suite.save()                                          ← dopisuje zaległe przebiegi (np. po błędzie zapisu)
+
+python -m analysis.summary                               ← osobno: metryki z pliku, tabele na ekran,
+                                                           sprawdzenie, czy agree_full ≥ pi
 ```
 
 Warstwy kodu:
@@ -432,7 +433,8 @@ Warstwy kodu:
 |---|---|---|
 | konfiguracja | [config.toml](config.toml), [src/config.py](src/config.py) | jedyne miejsce z parametrami badania |
 | metody | [src/methods/](src/methods/) | *jak* przewidywać; każda metoda zwraca predykcję i liczbę odpytanych drzew |
-| benchmark | [src/benchmarking/](src/benchmarking/) | *jak mierzyć*; nie wie nic o `config.toml` |
+| benchmark | [src/benchmarking/](src/benchmarking/) | *jak mierzyć*: predykcje, liczby drzew, czasy do pliku wyników; nie liczy metryk i nie wie nic o `config.toml` |
+| analiza | [src/analysis/](src/analysis/) | metryki z pliku wyników (`metrics.py`), podsumowanie (`summary.py`) |
 | skrypt | [src/testing.py](src/testing.py) | łączy config z benchmarkiem |
 | tablice IB | [src/methods/ib_pruning.py](src/methods/ib_pruning.py) | liczenie i zapis tablic progów |
 | dane | [src/data_generate/](src/data_generate/) | generowanie i pobieranie zbiorów |
@@ -597,9 +599,9 @@ Czasy dla odniesienia: `T=501, l=2` ok. 0,2 s; `T=501, l=3` ok. 83 s.
 ### 6.3. Wyniki (`data/<out_file>`)
 
 Wszystkie przebiegi są w jednym pliku Parquet (domyślnie `data/results/binary.parquet`),
-wiersz na (przebieg, scenariusz, metoda). Plik trzyma tylko dane surowe; metryki liczy
-z nich `compute_metrics` przy analizie, więc poprawka albo nowa metryka obejmuje też stare
-przebiegi.
+wiersz na (przebieg, scenariusz, metoda). Plik trzyma tylko dane surowe: benchmark nie liczy
+metryk. Liczy je z pliku `src/analysis` (`compute_metrics`), więc poprawka albo nowa metryka
+obejmuje też stare przebiegi.
 
 | Kolumny | Znaczenie |
 |---|---|
@@ -618,16 +620,31 @@ reszta zostaje. Przebiegi z innymi ustawieniami (np. inne `max_depth` albo `val_
 dopisują się obok, a metoda dodana później dołącza do zapisanych przebiegów tego samego
 zbioru i seeda. Nie ma wznawiania: ponowne uruchomienie liczy wszystko od początku.
 
+**Podsumowanie** (z `src/`; domyślnie plik z `out_file`, można podać inny):
+
+```sh
+python -m analysis.summary
+python -m analysis.summary ../data/results/regression.parquet
+```
+
+Wypisuje średnie metryk po seedach dla każdego zbioru i metody (oraz po wszystkich
+przebiegach), osobno dla `batch` i `online`, a na końcu przebiegi, w których
+`agree_full < pi`. Jeśli w pliku są przebiegi tego samego zbioru z różnymi ustawieniami
+(np. dwa `max_depth`), te ustawienia stają się dodatkowymi poziomami tabeli, więc nie są
+uśredniane razem.
+
 **Czytanie** (z `src/`):
 
 ```python
 import numpy as np, pandas as pd
-from benchmarking import compute_metrics
+from analysis import compute_metrics
+from analysis.summary import aggregate
 
 f = "../data/results/binary.parquet"
 raw = pd.read_parquet(f)
 m = compute_metrics(raw)              # te same wiersze, tablice zamienione na metryki
-m.query("mode == 'batch'").groupby(["dataset", "method"])[["accuracy", "trees_frac"]].mean()
+aggregate(m, by=["dataset"], mode="batch")         # mean/std po seedach, wiersz na (zbiór, metoda)
+aggregate(m, by=[], mode="online", stats="mean")   # wiersz na metodę, średnia po wszystkim
 
 # część pliku: kolumny i wiersze wybrane przy czytaniu (reszta nie jest czytana z dysku)
 pd.read_parquet(f, columns=["dataset", "seed", "method", "time_s"],
@@ -645,11 +662,11 @@ dopiero w wyniku: bez wiersza `full_voting` pozostałe metody tracą `agree_full
 i `speedup_vs_full`. Dla 100 przebiegów po 7 metod liczy ok. 3 s. Czasy metod policzonych
 w różnych uruchomieniach (różne `date`) porównuj ostrożnie.
 
-**Kolumny metryk** (`compute_metrics`, `Benchmark.results`, `BenchmarkSuite.results`):
+**Kolumny metryk** (`analysis.compute_metrics`; obok nich zostają kolumny przebiegu,
+`mode`, `method`, `pi`, `delta` i `date`):
 
 | Kolumna | Znaczenie |
 |---|---|
-| `dataset`, `seed`, `method` | indeks |
 | `accuracy`, `precision`, `recall`, `f1` | jakość względem prawdziwych etykiet (precision/recall/F1 makro-uśrednione) |
 | `agree_rf` | odsetek próbek z tą samą predykcją co `rf_sklearn` (tylko gdy `sklearn_soft_voting = true`) |
 | `agree_full` | to samo względem `full_voting` (tylko gdy `full_voting` jest w `[[methods]]`) |
@@ -670,11 +687,6 @@ W regresji (`task = "regression"`) kolumny jakości i zgodności są inne:
 
 Kolumny czasu i liczby drzew są te same. W regresji `y_true` i `y_pred` to liczby,
 a `delta` to tolerancja metody po `fit`.
-
-Średnią i odchylenie po seedach daje `groupby`, np.
-`m.groupby(["dataset", "method"])[["accuracy", "trees_frac"]].agg(["mean", "std"])`.
-`BenchmarkSuite.aggregate()` robi to samo, ale tylko dla przebiegów z bieżącego
-uruchomienia (te są w pamięci).
 
 `n_used` pozwala analizować np. histogram liczby drzew albo zależność „trudności” próbki
 od tego, czy IB pomylił się względem pełnego głosowania.
@@ -704,8 +716,8 @@ powtórzenia.
 ### 7.2. Jak czytać wyniki
 
 - **Zgodność:** metoda MARGIN nie ma `pi`; jej `agree_full` zależy od `k` i trzeba je po prostu
-  odczytać z wyników. Dla IB pruning `agree_full` powinno być ≥ `pi`. Na końcu `testing.py` wypisuje
-  przebiegi, w których tak nie jest. Zwykle `agree_full` jest *znacznie* wyższe niż `pi`
+  odczytać z wyników. Dla IB pruning `agree_full` powinno być ≥ `pi`. `python -m analysis.summary`
+  wypisuje na końcu przebiegi, w których tak nie jest. Zwykle `agree_full` jest *znacznie* wyższe niż `pi`
   (np. 0,997 przy `pi = 0.98`), bo `pi` to (w ramach modelu urny Polyi) minimalne
 prawdopodobieństwo zgodności w momencie przerwania dla pojedynczej próbki, a większość
   próbek jest daleko od granicy decyzyjnej.
@@ -743,13 +755,19 @@ Dlatego przyspieszenie podajemy względem obu metod odniesienia.
 
 ### 7.4. Analiza w notebooku / interaktywnie
 
-Po uruchomieniu komórek `testing.py` obiekt `suite` jest w pamięci:
+Wyniki są w pliku, a nie w obiektach `testing.py`, więc analiza zaczyna się od jego
+wczytania. Przykład z `src/`; w notebooku w `src/analysis/` najpierw
+`sys.path.insert(0, "..")`, a ścieżka do pliku to `../../data/...`:
 
 ```python
-suite.results("batch")                      # pełna tabela (MultiIndex: dataset, seed, method)
-suite.aggregate("online")                   # mean/std po seedach
-suite.aggregate("batch", overall=True)      # jeden wiersz na metodę, średnia po wszystkim
-suite.runs[0].N_used["batch"]               # surowe liczby drzew pierwszego przebiegu
+from analysis import compute_metrics
+from analysis.summary import aggregate, check_pi, summary
+
+raw = pd.read_parquet("../data/results/binary.parquet")
+m = compute_metrics(raw)
+summary(m)                                  # to samo, co python -m analysis.summary
+aggregate(m, by=["dataset", "max_depth"])   # mean/std po seedach dla każdej głębokości
+raw.loc[0, "n_used"]                        # surowe liczby drzew pierwszego wiersza
 ```
 
 Notebooki w [src/analysis/](src/analysis/) to eksploracja *zbiorów danych* (rozkłady cech,
@@ -982,8 +1000,8 @@ istniejące tablice w `data/tablice/`.
 | nową tablicę IB | `from methods import generate_table; generate_table(T, l, pi)` (z `src/`) |
 | badać zbiory z 4+ klasami | `multiclass = "pair"` w blokach `ib_pruning`, `hyper`, `own` |
 | uruchomić regresję | `task = "regression"`, `datasets = ["generated/regression"]`, `out_file = "results/regression.parquet"` |
-| sprawdzić, czy IB dotrzymuje `pi` | kolumna `agree_full` i komunikat na końcu `testing.py` |
+| sprawdzić, czy IB dotrzymuje `pi` | `python -m analysis.summary` (z `src/`): kolumna `agree_full` i lista przebiegów z `agree_full < pi` |
 | zobaczyć, ile drzew trzeba | `trees_mean`, `trees_frac`; rozkład w kolumnie `n_used` pliku wyników |
-| wczytać wyniki | `compute_metrics(pd.read_parquet(f))` (rozdz. 6.3) |
+| wczytać wyniki | `from analysis import compute_metrics; compute_metrics(pd.read_parquet(f))` (rozdz. 6.3) |
 | zachować wynik powtórzenia z tymi samymi ustawieniami | inny `out_file`; inne ustawienia dopisują się same |
 | odtworzyć zbiory | `python src/data_generate/generate_datasets.py` (seed z `config.toml`) |
