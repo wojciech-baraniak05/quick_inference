@@ -1,5 +1,7 @@
 # Interactive work: the notebooks in src/analysis and the "# %%" cells of src/testing.py.
+# Tests: python -m pytest (from the repository root, settings in pytest.ini).
 -r requirements.txt
 ipykernel==7.4.0
 matplotlib==3.11.2
+pytest==9.2.0
 seaborn==0.13.2
