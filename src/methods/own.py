@@ -9,7 +9,7 @@ from sklearn.ensemble import RandomForestRegressor
 
 from .base import CALIB_SUFFIX, ORDER_SUFFIX, Calib, FloatArray, IntArray, Multiclass, Order, pi_tag
 from .glee import alpha_from_pi, glee_table
-from .hyper import Hyper, uniform_prior
+from .hyper import SMOOTH_SUFFIX, Hyper, SmoothMode, uniform_prior
 from .oob import oob_variances
 from .regression import SequentialRegression, student_multiplier
 
@@ -31,7 +31,7 @@ def merge_glee(threshold: IntArray, glee_threshold: IntArray, pair: bool) -> Int
 class Own(Hyper):
     """HYPER z a priori lam * P_OOB + (1 - lam) * P_jednostajny (lam = 1: HYPER, lam = 0:
     IB pruning); glee=True dodaje alternatywę z regułą GLEE. calib="val": P_OOB zastępuje
-    a priori z głosów na zbiorze walidacyjnym."""
+    a priori z głosów na zbiorze walidacyjnym. smooth_mode jak w Hyper."""
 
     PREFIX = "OWN"
 
@@ -39,7 +39,8 @@ class Own(Hyper):
                  pi_glee: float | None = None, min_votes: int | None = None,
                  n_prior: int | None = 20000, smooth: int = 5, name: str | None = None,
                  order: Order = "fixed", seed: int | None = None,
-                 multiclass: Multiclass = "full", calib: Calib = "oob") -> None:
+                 multiclass: Multiclass = "full", calib: Calib = "oob",
+                 smooth_mode: SmoothMode = "mean") -> None:
         if not 0 <= lam <= 1:
             raise ValueError(f"{type(self).__name__}: lam must be in [0, 1], got {lam}")
         pi_glee = pi if pi_glee is None else pi_glee
@@ -51,9 +52,10 @@ class Own(Hyper):
         self.lam, self.glee, self.pi_glee, self.min_votes = lam, glee, pi_glee, min_votes
         if name is None:
             name = (f"OWN_lam{lam:g}_pi{pi_tag(pi)}" + ("_glee" if glee else "")
-                    + ("_pair" if multiclass == "pair" else "") + CALIB_SUFFIX.get(calib, "")
+                    + ("_pair" if multiclass == "pair" else "")
+                    + SMOOTH_SUFFIX.get(smooth_mode, "") + CALIB_SUFFIX.get(calib, "")
                     + ORDER_SUFFIX.get(order, ""))
-        super().__init__(pi, n_prior, smooth, name, order, seed, multiclass, calib)
+        super().__init__(pi, n_prior, smooth, name, order, seed, multiclass, calib, smooth_mode)
 
     def _prior(self, prior: FloatArray) -> FloatArray:
         pair = self.multiclass == "pair"

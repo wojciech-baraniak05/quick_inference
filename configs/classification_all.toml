@@ -83,8 +83,8 @@ pi = 0.98
 calib = "val"
 
 [[methods]]
-type = "glee"                       # GLEE_pi98 (dowolna liczba klas)
-pi = 0.98
+type = "glee"                       # GLEE_pi98_rand (dowolna liczba klas): domyślnie losowa
+pi = 0.98                           # kolejność drzew dla każdej próbki, seed = 0 (batch wolniejszy)
 
 [[methods]]
 type = "margin"                     # MARGIN_k0

@@ -54,8 +54,9 @@ def margin_stats(votes: IntArray, y: IntArray) -> tuple[float, float]:
 
 
 def n_trees_from_margin(T: int, mu: float, sigma: float, k: float) -> int:
-    """N* = T * (mu + k * sigma), zaokrąglone i ograniczone do [1, T]."""
-    return int(np.clip(np.rint(T * (mu + k * sigma)), 1, T))
+    """N* = T * (mu + k * sigma), zaokrąglone w górę i ograniczone do [1, T]. Artykuł nie
+    podaje zaokrąglenia; sufit jest zachowawczy (w razie wątpliwości jedno drzewo więcej)."""
+    return int(np.clip(np.ceil(T * (mu + k * sigma)), 1, T))
 
 
 def margin_drop(pred: IntArray, y: IntArray, l: int) -> FloatArray:

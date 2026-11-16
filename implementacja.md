@@ -172,7 +172,8 @@ zależy od kolejności.
 
 Kolejność wybiera parametr `order` (z opcjonalnym `seed`) w IB, HYPER, GLEE, metodach
 własnych i metodach regresyjnych. Domyślne nazwy dostają przyrostek `_shuf` albo `_rand`
-(`ORDER_SUFFIX`).
+(`ORDER_SUFFIX`). Domyślnie jest to `fixed` z `seed = None`; wyjątkiem jest klasyfikacyjny
+GLEE (`random`, `seed = 0`, rozdz. 6.1).
 
 ### 3.6. Reguła dla pary lider – druga klasa
 
@@ -299,10 +300,29 @@ Kroki:
    wychodzi dokładnie `T`.
 3. Z przeskalowanych składów powstaje histogram.
 4. Histogram jest wygładzany oknem przesuwnym o szerokości `smooth` (artykuł: 5; 0 lub 1
-   wyłącza wygładzanie). Filtr liczy sumy kroczące i potrafi zostawić wartości rzędu
-   `-1e-20` zamiast 0. Ujemne „prawdopodobieństwo” dawało `nan` w całej tablicy progów,
-   stąd `np.clip(..., 0, None)`.
-5. Składy niemożliwe (suma > `T`) są zerowane, a całość normalizowana do sumy 1.
+   wyłącza wygładzanie) funkcją `smooth_valid`: wartość komórki to suma histogramu w oknie
+   podzielona przez liczbę **składów możliwych** (suma <= `T`) w tym oknie. Przy brzegu okno
+   jest więc obcinane, a nie dopełniane zerami; tak działa `smooth_matrix` w kodzie autorów
+   (github.com/vsoto/majority-ibp-prior). Dopełnianie zerami zaniżało składy bliskie
+   jednomyślności (masa 0,50 spadała do 0,375) i przy trzech klasach faworyzowało ostatnią
+   klasę, bo okno jest kwadratem we współrzędnych dwóch pierwszych klas. Filtr potrafi
+   zostawić wartości rzędu `-1e-20` zamiast 0, a ujemne „prawdopodobieństwo” dawało `nan`
+   w całej tablicy progów, stąd `np.clip(..., 0, None)`.
+5. Składy niemożliwe (suma > `T`) mają 0, a całość jest normalizowana do sumy 1.
+
+**`smooth_mode = "mass"`: sugestia własna, nie ma jej w artykule ani w kodzie autorów.**
+Wariant autorów (`"mean"`, domyślny) nadal gubi część masy przy brzegu: skład jednomyślny
+trafia do trzech komórek z wagami 1/3, 1/4 i 1/5, czyli zostaje 78% jego masy, a skład ze
+środka zakresu zachowuje całość. Po normalizacji udział próbek jednomyślnych spada (w teście
+z połową próbek jednomyślnych: 0,44 zamiast 0,50). W wariancie `"mass"` kolejność działań
+jest odwrócona: histogram jest najpierw dzielony przez liczbę składów możliwych w oknie
+każdej komórki, a dopiero potem sumowany po oknie. Każda komórka rozdziela więc swoją masę
+po równo między składy możliwe w swoim oknie, suma histogramu się nie zmienia, a udział
+próbek jednomyślnych i udział każdej klasy zostają takie jak w danych (0,50 w tym samym
+teście; przy trzech klasach 1/3 na klasę zamiast 0,331 / 0,331 / 0,339). Dalej niż 4 komórki
+od brzegu oba warianty dają to samo. Domyślne nazwy dostają przyrostek `_mass`
+(`HYPER_pi98_mass`, `HYPER_pi98_pair_mass_val`); parametr mają `Hyper` i `Own`, działa też
+z `multiclass = "pair"`.
 
 ### 5.3. `hyper_table(prior, pi)`: tablica progów
 
@@ -317,29 +337,36 @@ bez sortowania.
 
 Sposób liczenia. Niech
 
-- `h(t)` = suma po składach `T` z `P(T) * P(konkretna kolejność głosów o liczbach t | T)`,
-- `g_c(t)` = ta sama suma, ale tylko po składach, w których wygrywa klasa `c`.
+- `h(t)` = prawdopodobieństwo, że po `s = suma(t)` zapytaniach liczby głosów to `t`, czyli
+  suma po składach `T` z `P(T) * P(t | T)` (rozkład hipergeometryczny),
+- `g_c(t)` = ta sama suma, ale tylko po składach, w których klasa `c` ma **ściśle** najwięcej
+  głosów.
 
 Wtedy `P*(t, T) = g_c(t) / h(t)` dla `c` = klasa prowadząca w `t`. Obie funkcje spełniają
-tę samą rekurencję, bo następny głos trafia do którejś klasy:
+tę samą rekurencję: stan `t` po `s` zapytaniach powstaje ze stanu `t + e_i` po `s + 1`
+zapytaniach, gdy ostatnie zapytane drzewo głosowało na klasę `i`, a każde z `s + 1` drzew
+jest ostatnim z tą samą szansą:
 
 ```
-f(t) = suma_i f(t + e_i)
+f(t) = suma_i (t_i + 1) / (s + 1) * f(t + e_i)
 ```
 
-z warunkiem brzegowym dla kompletu głosów: `f(T) = P(T) / (T! / (T_1! ... T_l!))`.
-Kod idzie więc warstwami od `T` głosów w dół; stanów jest `C(T + l, l)`.
+z warunkiem brzegowym dla kompletu głosów: `h(T) = P(T)`. Kod idzie więc warstwami od `T`
+głosów w dół; stanów jest `C(T + l, l)`.
 
 Jak to wygląda w kodzie:
 
 - `G` ma kształt `(l + 1, *prior.shape)`: `G[c]` to `g_c`, a `G[l]` to `h`. Stan jest
   indeksowany głosami pierwszych `l - 1` klas; głosy ostatniej klasy wynikają z numeru
   warstwy `s` (`s - suma`).
-- Warstwa `T` jest liczona w logarytmach (`gammaln`), żeby silnie się nie przepełniły.
-- Krok rekurencji to dodanie przesuniętych kopii `G`: głos dla klasy `i` przesuwa indeks
-  `i` o jeden, a głos dla ostatniej klasy zostawia indeksy bez zmian (stąd `nowe = G.copy()`).
-- Po każdej warstwie `G` jest dzielone przez `max(h)`. Liczy się tylko iloraz `g_c / h`,
-  a skalowanie chroni przed nadmiarem i niedomiarem.
+- Wartości są zwykłymi prawdopodobieństwami (suma `h` po warstwie to 1), więc nie trzeba
+  ich skalować ani liczyć silni. Wcześniejsza wersja liczyła `P(T) * T_1! ... T_l!`
+  względem największej wartości; dla `T` powyżej ok. 1000 składy bliskie remisu
+  zaokrąglały się wtedy do zera i progi wychodziły za niskie.
+- Krok rekurencji to dodanie przesuniętych kopii `G` z wagami `t_i + 1`: głos dla klasy `i`
+  przesuwa indeks `i` o jeden, a głos dla ostatniej klasy zostawia indeksy bez zmian.
+- W warstwie `s` liczone są tylko komórki o indeksach `<= s + 1`; dalsze mają sumę większą
+  niż `s + 1` i są już zerami.
 - Stan jest „zły”, jeśli `P* < pi`. Wyjątek: gdy przewaga lidera jest większa niż liczba
   pozostałych głosów (`pewne`), wynik jest przesądzony niezależnie od a priori.
 - **`P*` nie musi być monotoniczne** w liczbie głosów lidera. Próg jest więc ustawiany za
@@ -347,9 +374,10 @@ Jak to wygląda w kodzie:
   przerwanie spełnia `P* >= pi`.
 - Stany niemożliwe według a priori (`h = 0`) są złe, czyli nie przerywają głosowania.
 
-Remis na końcu głosowania jest liczony tak, jak rozstrzyga go `full_voting` (`argmax`,
-niższy indeks klasy). W IB pruning remis to przegrana, dlatego przy jednostajnym a priori
-tablica HYPER nie jest identyczna z tablicą IB w komórkach bliskich progu.
+Remis na końcu głosowania to przegrana lidera, tak jak w IB pruning, w dokumencie projektu
+(„ściśle więcej głosów”) i w kodzie autorów. Przy jednostajnym a priori reguła HYPER jest
+więc identyczna z IB dla każdej liczby klas i każdego `T`. `full_voting` rozstrzyga remis
+niższym indeksem klasy, więc przy remisie w pełnym zespole reguła jest ostrożna.
 
 ### 5.4. Odczyt i ograniczenia
 
@@ -392,9 +420,9 @@ i zwraca `threshold[c, t_2]` = najmniejsza liczba głosów lidera `c` przy `t_2`
 klasy. Dwa szczegóły:
 
 - klasa `c` jest podawana do `hyper_table` jako **druga** klasa urny binarnej
-  (`p[::-1]`, potem `[1]`), więc remis w pełnym zespole liczy się jako jej przegrana.
-  Zgadza się to z definicją z dokumentu („ściśle więcej głosów”) i jest ostrożne przy
-  parzystym `T`,
+  (`p[::-1]`, potem `[1]`): przy remisie w głosach `hyper_table` uznaje za lidera klasę
+  pierwszą, więc tablica klasy drugiej obejmuje tylko stany z `t_1 > t_2`. Remis w pełnym
+  zespole to przegrana lidera niezależnie od pozycji klasy (rozdz. 5.3),
 - próg jest podnoszony do co najmniej `t_2 + 1`: przy remisie w głosach lider nie jest
   wyznaczony, więc stop wymaga ścisłej przewagi.
 
@@ -432,6 +460,13 @@ wpływał na wybór `default_min_votes` ani na kwantyl.
 
 Dla wielu klas (przypis 1 w artykule) klasa prowadząca jest traktowana jak klasa 1,
 a druga w kolejności jak klasa 0: `p^ = t_1 / (t_1 + t_2)`, `n = t_1 + t_2`.
+
+Kolejność drzew. Przedział ufności opisuje losową próbę z zespołu, a algorytm 2 artykułu
+losuje kolejne drzewo bez zwracania dla każdej próbki. Dlatego `Glee` ma domyślnie
+`order = "random"` i `seed = 0` (powtarzalne wyniki), a domyślna nazwa to `GLEE_pi98_rand`.
+`order = "fixed"` zostaje jako wariant szybszy w batchu (nazwa `GLEE_pi98`). Autorzy w swojej
+implementacji permutują zespół raz i zaczynają każdą próbkę od losowego indeksu; tego
+wariantu kod nie ma.
 
 ### 6.2. `glee_table(T, alpha, min_votes, fpc, one_sided)`
 
@@ -538,8 +573,8 @@ każdym usunięciu) nie jest zaimplementowany.
 
 - `margin_stats(votes, y)`: „poprawnie sklasyfikowana” znaczy, że `argmax` głosów
   (tak jak w `full_voting`) wskazuje klasę prawdziwą.
-- `n_trees_from_margin(T, mu, sigma, k)`: artykuł nie podaje zaokrąglenia; kod zaokrągla do
-  najbliższej liczby całkowitej i ogranicza do `[1, T]`.
+- `n_trees_from_margin(T, mu, sigma, k)`: artykuł nie podaje zaokrąglenia; kod zaokrągla
+  w górę (zachowawczo: w razie wątpliwości jedno drzewo więcej) i ogranicza do `[1, T]`.
 - `set_k(k)` zmienia `k` i `n_star` bez ponownej kalibracji (artykuł: strojenie `k` po
   wdrożeniu). Nazwa metody w wynikach zostaje taka, jak przy utworzeniu.
 
@@ -849,8 +884,8 @@ P_lam(T) = lam * P_OOB(T) + (1 - lam) * P_jednostajny(T)
 o sumie `T` (dla dwóch klas `1 / (T + 1)`), a w trybie pary jednostajny w każdym wierszu.
 `lam = 1` to HYPER (tablica identyczna), `lam = 0` to IB pruning: tablica jest taka sama
 jak z pliku we wszystkich komórkach, do których głosowanie może dojść (pozostałe HYPER
-zostawia z wartością 0, IB z `T + 1`; żadnej nie da się odczytać). Uwaga z rozdz. 5.3
-o remisach przy parzystym `T` dotyczy też `lam = 0`.
+zostawia z wartością 0, IB z `T + 1`; żadnej nie da się odczytać). Remis w pełnym zespole
+obie metody liczą jako przegraną (rozdz. 5.3), więc dotyczy to każdej liczby klas i każdego `T`.
 
 **Wariant rozszerzony** (`glee=True`): stop, gdy pozwala reguła HYPER **lub** GLEE.
 `merge_glee(threshold, glee_threshold, pair)` łączy tablice w `fit()`: obie mówią „stop, gdy głosy

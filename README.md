@@ -117,13 +117,20 @@ random permutation instead of the `rf.estimators_` order; the default name becom
 query different trees cannot share one `predict` call.
 
 A `hyper` method takes `pi` and optionally `n_prior` (number of training or validation
-samples used for the votes, default 20000), `smooth` (prior smoothing window, default 5) and
-`calib` (`oob` or `val`, see below). It needs no table file.
+samples used for the votes, default 20000), `smooth` (prior smoothing window, default 5),
+`smooth_mode` and `calib` (`oob` or `val`, see below). It needs no table file.
+`smooth_mode = "mass"` is this project's own suggestion, not part of the paper: the authors'
+smoothing (`"mean"`, the default) loses prior mass near unanimous votes, while `"mass"`
+spreads every composition only over feasible neighbours and keeps all of it (default name
+`HYPER_pi98_mass`).
 
 A `glee` method takes `pi` (the paper's `α` is `1 - pi`) and optionally `min_votes`
 (votes required before stopping; default 15, 30 or 45 depending on `α`, as in the paper),
 `fpc` (finite population correction, default `true`) and `one_sided` (default `true`).
 It needs no table file and no training data, and works for any number of classes.
+Unlike the other methods, `glee` defaults to `order = "random"` with `seed = 0`: the paper's
+rule samples trees at random without replacement for every sample, so the default name is
+`GLEE_pi98_rand` (`order = "fixed"` gives `GLEE_pi98` and a faster batch mode).
 
 A `margin` method takes `k` (default 0; larger = more trees) and optionally `ranking`
 (`mean_d_m`, `accuracy` or `none`; default `mean_d_m`) and `n_calib` (number of training
@@ -133,7 +140,7 @@ works for any number of classes. It has no `pi`: its results are named `MARGIN_k
 
 An `own` method takes `pi`, `lam` (prior mixing weight, default 0.5), `glee`
 (default `false`), `pi_glee` and `min_votes` for the GLEE rule, and HYPER's `n_prior`,
-`smooth`, `multiclass` and `calib`.
+`smooth`, `smooth_mode`, `multiclass` and `calib`.
 
 The regression methods `ib_reg`, `glee_reg` and `own_reg` take `pi` and exactly one of
 `delta` (tolerance in target units) and `delta_std` (tolerance in standard deviations of
@@ -259,7 +266,7 @@ Offline, `fit(rf, X_train, y_train)`:
    classified calibration samples and sets
 
    ```
-   N* = N · (mu + k · sigma)        rounded, kept within [1, N]
+   N* = N · (mu + k · sigma)        rounded up, kept within [1, N]
    ```
 
 At prediction time every sample is voted on by the first `N*` trees of the ranking, so
@@ -326,7 +333,7 @@ selected `modes`:
 - **batch**: the whole test set at once;
 - **online**: the first `n_online` samples, predicted one by one.
 
-The default config compares `rf_sklearn`, `full_voting`, `IB_pi98`, `HYPER_pi98`, `GLEE_pi98`, `MARGIN_k0` and `OWN_lam0.5_pi98` on the binary synthetic
+The default config compares `rf_sklearn`, `full_voting`, `IB_pi98`, `HYPER_pi98`, `GLEE_pi98_rand`, `MARGIN_k0` and `OWN_lam0.5_pi98` on the binary synthetic
 datasets (501 trees, depth 5, seeds 1–3). It also holds the regression blocks; to run them,
 set `task = "regression"`, point `datasets` at `generated/regression` and change `out_file`.
 

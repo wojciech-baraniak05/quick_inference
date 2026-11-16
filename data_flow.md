@@ -3,7 +3,7 @@
 UML sequence diagram of `src/testing.py` for the configuration currently in `config.toml`:
 `task = "classification"`, `datasets = ["generated/binary"]`, `seeds = [1, 2, 3]`,
 `modes = ["batch", "online"]`, a forest of 501 trees with `max_depth = 5`, and seven enabled
-methods (`rf_sklearn`, `full_voting`, `IB_pi98`, `HYPER_pi98`, `GLEE_pi98`, `MARGIN_k0`,
+methods (`rf_sklearn`, `full_voting`, `IB_pi98`, `HYPER_pi98`, `GLEE_pi98_rand`, `MARGIN_k0`,
 `OWN_lam0.5_pi98`).
 
 ```mermaid

@@ -78,6 +78,7 @@ max_depth = "none"
 #   order   - "fixed" (domyślnie, kolejność rf.estimators_) | "shuffled" (jedna losowa
 #             permutacja lasu, wspólna dla próbek) | "random" (permutacja na próbkę)
 #   seed    - seed permutacji; generator tworzony od nowa w fit()
+#   (wyjątek: glee ma domyślnie order = "random" i seed = 0)
 # ib_pruning, hyper i own mają multiclass:
 #   "full" (domyślnie) - tablica dla wszystkich klas naraz (IB: plik T{T}_L{l}; HYPER i own:
 #                        do 3 klas przy 501 drzewach)
@@ -118,6 +119,8 @@ type = "hyper"                      # IB pruning z a priori z głosów out-of-ba
 pi = 0.98                           # tablica liczona w fit() z danych uczących, bez pliku
 # n_prior = 20000                   # ile próbek kalibracyjnych do głosów (domyślnie 20000)
 # smooth = 5                        # okno wygładzania a priori (0 = bez wygładzania)
+# smooth_mode = "mass"              # wygładzanie zachowujące masę przy brzegu: SUGESTIA WŁASNA, nie z
+#                                   # artykułu (nazwa: HYPER_pi98_mass); domyślnie "mean" = kod autorów
 # multiclass = "pair"               # tablice binarne lider - druga klasa (nazwa: HYPER_pi98_pair)
 # calib = "val"                     # a priori z głosów na zbiorze walidacyjnym (nazwa: HYPER_pi98_val)
 
@@ -130,13 +133,15 @@ enabled = false
 [[methods]]
 type = "glee"                       # gaussowski przedział ufności (GLEE z COMET, Basilico i in., 2011)
 pi = 0.98                           # alfa = 1 - pi; tablica liczona w fit(), bez pliku i bez danych
+# order = "random"                  # glee domyślnie losuje kolejność drzew dla każdej próbki, seed = 0
+#                                   # (algorytm 2 artykułu; nazwa: GLEE_pi98_rand); "fixed" = GLEE_pi98
 # min_votes = 15                    # min. liczba głosów przed stopem (domyślnie wg artykułu: 15/30/45)
 # fpc = true                        # poprawka na populację skończoną
 # one_sided = true                  # przedział jednostronny (false = dwustronny, ostrożniejszy)
 
 [[methods]]
 type = "margin"                     # stała liczba drzew z marginesu lasu (Barbareschi, Emmanuele, 2025)
-k = 0.0                             # N* = n_trees * (mu + k * sigma); k > 0: więcej drzew, k < 0: mniej
+k = 0.0                             # N* = sufit z n_trees * (mu + k * sigma); k > 0: więcej drzew, k < 0: mniej
 # ranking = "mean_d_m"              # kolejność drzew: "mean_d_m" (artykuł) | "accuracy" | "none"
 # n_calib = 20000                   # ile próbek do kalibracji (domyślnie 20000)
 # calib = "val"                     # kalibracja na zbiorze walidacyjnym (nazwa: MARGIN_k0_val)
@@ -148,7 +153,7 @@ lam = 0.5                           # 1 = HYPER, 0 = IB pruning
 # glee = true                       # wariant rozszerzony: stop, gdy pozwala HYPER lub GLEE (nazwa: ..._glee)
 # pi_glee = 0.99                    # poziom ufności reguły GLEE (domyślnie pi)
 # min_votes = 15                    # jak w glee
-# n_prior, smooth, multiclass, calib  # jak w hyper
+# n_prior, smooth, smooth_mode, multiclass, calib  # jak w hyper
 
 [[methods]]
 type = "own"                        # wariant rozszerzony (nazwa: OWN_lam0.5_pi98_glee)
