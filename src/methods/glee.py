@@ -47,14 +47,16 @@ def glee_table(T: int, alpha: float, min_votes: int | None = None, fpc: bool = T
 
 
 class Glee(SequentialPruning):
-    """Stop, gdy dolna granica przedziału ufności dla odsetka głosów lidera przekroczy 0.5."""
+    """Stop, gdy dolna granica przedziału ufności dla odsetka głosów lidera przekroczy 0.5.
+    Przedział opisuje losową próbę drzew, więc domyślnie każda próbka odpytuje drzewa w
+    kolejności losowej bez zwracania (algorytm 2 artykułu); seed = 0 daje powtarzalne wyniki."""
 
     pi: float
     threshold: IntArray
 
     def __init__(self, pi: float = 0.99, min_votes: int | None = None, fpc: bool = True,
                  one_sided: bool = True, name: str | None = None,
-                 order: Order = "fixed", seed: int | None = None) -> None:
+                 order: Order = "random", seed: int | None = 0) -> None:
         if not 0.5 < pi <= 1:
             raise ValueError(f"{type(self).__name__}: pi must be in (0.5, 1], got {pi}")
         if min_votes is not None and min_votes < 1:

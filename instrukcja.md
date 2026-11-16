@@ -34,7 +34,7 @@ Każdą metodę porównujemy z dwiema metodami odniesienia:
 | `full_voting` | **hard voting**: każde drzewo oddaje jeden głos, wygrywa większość | to jest dokładnie to, co IB pruning przybliża; punkt odniesienia dla zgodności |
 | `IB_pi98` itd. | IB pruning z poziomem `pi` | badana metoda |
 | `HYPER_pi98` itd. | IB pruning z a priori rozkładu głosów szacowanym z danych (rozdz. 2a) | badana metoda |
-| `GLEE_pi98` itd. | wczesny stop z gaussowskim przedziałem ufności, z artykułu COMET (rozdz. 2b) | badana metoda |
+| `GLEE_pi98_rand` itd. | wczesny stop z gaussowskim przedziałem ufności, z artykułu COMET (rozdz. 2b) | badana metoda |
 | `MARGIN_k0` itd. | ranking drzew i stała liczba drzew wyznaczona z marginesu lasu (rozdz. 2c) | badana metoda |
 | `OWN_lam0.5_pi98` itd. | metoda własna: HYPER z a priori zmieszanym z jednostajnym, opcjonalnie z regułą GLEE (rozdz. 2e) | badana metoda |
 | `IBREG_…`, `GLEEREG_…`, `OWNREG_…` | regresja: wczesny stop, gdy średnia jest już w tolerancji `delta` (rozdz. 2f); odniesieniem jest `full_averaging` | badane metody |
@@ -128,17 +128,20 @@ HYPER szacuje `P(T)` z danych:
    (`val_votes`), którego las nie widział (rozdz. 5, `val_size`).
 2. **A priori** (`prior_from_votes`): głosy próbki skalujemy do T drzew
    (`T_i ≈ T · głosy_i / suma`), robimy histogram składów i wygładzamy go oknem o szerokości 5.
+   Przy brzegu okno jest obcinane do składów możliwych i średnia jest liczona tylko z nich
+   (tak jak w kodzie autorów), bez dopełniania zerami.
 3. **Tablica progów** (`hyper_table`): rekurencja wstecz po liczbie głosów,
-   `f(t) = Σ_i f(t + e_i)`, liczona warstwami w NumPy. A priori nie jest symetryczne, więc
-   **każda klasa prowadząca ma własną tablicę**: `threshold[c, głosy pozostałych klas]`.
+   `h(t) = Σ_i (t_i + 1) / (s + 1) · h(t + e_i)`, liczona warstwami w NumPy. A priori nie jest
+   symetryczne, więc **każda klasa prowadząca ma własną tablicę**:
+   `threshold[c, głosy pozostałych klas]`.
 
 Różnice względem IB pruning w praktyce:
 
 - tablica zależy od danych, więc jest liczona w `fit()` dla każdego lasu i **nie ma pliku**
-  w `data/tablice/` (`T=501`: ok. 0,03 s dla 2 klas, ok. 7 s dla 3 klas; 4+ klasy przy
+  w `data/tablice/` (`T=501`: ok. 0,03 s dla 2 klas, ok. 5 s dla 3 klas; 4+ klasy przy
   `T=501` są pomijane z ostrzeżeniem, limit to 2 mln komórek `(T+1)^(l-1)`),
-- remis na końcu jest liczony tak, jak rozstrzyga go `full_voting` (`argmax`, niższy indeks
-  klasy), a nie jako przegrana,
+- remis na końcu to przegrana, tak samo jak w IB pruning (lider musi mieć w pełnym zespole
+  ściśle najwięcej głosów); przy jednostajnym a priori tablica jest więc taka sama jak w IB,
 - stany, które według a priori są niemożliwe, nie przerywają głosowania (chyba że pozostałe
   głosy nie mogą już zmienić wyniku),
 - `agree_full` wypada **blisko** `pi`, a nie dużo powyżej, i w pojedynczych przebiegach może
@@ -148,8 +151,13 @@ Różnice względem IB pruning w praktyce:
   bez danych testowych.
 
 Parametry w configu: `pi`, `n_prior` (ile losowych próbek uczących albo walidacyjnych użyć
-do głosów, domyślnie 20000), `smooth` (okno wygładzania, 0 = bez) i `calib` (`"oob"`
-domyślnie albo `"val"`: zbiór walidacyjny, nazwa `HYPER_pi98_val`).
+do głosów, domyślnie 20000), `smooth` (okno wygładzania, 0 = bez), `smooth_mode` i `calib`
+(`"oob"` domyślnie albo `"val"`: zbiór walidacyjny, nazwa `HYPER_pi98_val`).
+
+`smooth_mode = "mass"` to **sugestia własna projektu**, której nie ma w artykule: wygładzanie
+autorów (`"mean"`, domyślne) zaniża przy brzegu udział próbek, na które las głosuje
+jednomyślnie, a wariant `"mass"` rozdziela masę każdego składu tylko między składy możliwe
+i zachowuje ją w całości (nazwa `HYPER_pi98_mass`; szczegóły: implementacja.md, rozdz. 5.2).
 
 ---
 
@@ -177,7 +185,11 @@ p̂ − ρ·δ > 0,5
   `min_votes` głosach; artykuł podaje 15, 30 i 45 dla `α` = 10⁻², 10⁻³ i 10⁻⁴ i takie są
   wartości domyślne (dla `pi = 0.98` jest to 15),
 - dla wielu klas klasa prowadząca jest traktowana jak klasa 1, a druga w kolejności jak
-  klasa 0: `p̂ = t_1 / (t_1 + t_2)`, `n = t_1 + t_2`.
+  klasa 0: `p̂ = t_1 / (t_1 + t_2)`, `n = t_1 + t_2`,
+- przedział opisuje **losową próbę** drzew, więc każda próbka odpytuje drzewa w kolejności
+  losowej bez zwracania (algorytm 2 artykułu). Dlatego `glee` ma domyślnie `order = "random"`
+  i `seed = 0`, a domyślna nazwa to `GLEE_pi98_rand`; `order = "fixed"` daje `GLEE_pi98`
+  (kolejność lasu, szybszy batch).
 
 Tak jak w IB, regułę zamieniamy na **tablicę progów** (`glee_table`), tutaj jednowymiarową:
 `threshold[t_2]` = najmniejsze `t_1`, przy którym wolno przerwać. Dla `T = 501`, `pi = 0.98`:
@@ -199,7 +211,7 @@ Różnice względem IB i HYPER w praktyce:
 Z COMET wzięta jest tylko ta reguła. Część o uczeniu (MapReduce, lasy IVoting) dotyczy budowy
 zespołu, a projekt bada inferencję na gotowym lesie ze scikit-learn.
 
-Parametry w configu: `pi`, `min_votes`, `fpc`, `one_sided`.
+Parametry w configu: `pi`, `min_votes`, `fpc`, `one_sided`, `order`, `seed`.
 
 ---
 
@@ -227,7 +239,7 @@ M = (v_c − v_c*) / N
    `sigma` marginesu próbek **poprawnie sklasyfikowanych**, a z nich liczba drzew:
 
    ```
-   N* = N · (mu + k · sigma)          zaokrąglone, w przedziale [1, N]
+   N* = N · (mu + k · sigma)          zaokrąglone w górę, w przedziale [1, N]
    ```
 
 **Faza po wdrożeniu**: każdą próbkę ocenia `N*` pierwszych drzew rankingu, wynik to
@@ -810,7 +822,7 @@ wcześniejszą wersję generatora (np. `CATEGORICAL_FEATURES`), której w
    tę wartość i nie obciążaj komputera w trakcie. Wszystkie metody działają w jednym wątku (rozdz. 9).
 
 5. **Parzyste T.** Przy parzystej liczbie drzew możliwy jest remis. `full_voting` wybiera wtedy
-   klasę o niższym indeksie, a IB traktuje remis jako „nie wygrana”. Dla klasyfikacji binarnej
+   klasę o niższym indeksie, a IB i HYPER traktują remis jako „nie wygrana”. Dla klasyfikacji binarnej
    używaj nieparzystego T (501, 51).
 
 6. **Dwa pliki z pakietami.** `requirements.txt` to tylko pakiety potrzebne do benchmarku
