@@ -390,6 +390,20 @@ For regression the quality columns are `mae`, `rmse` and `r2`, the full-forest r
 `full_averaging`, and `mad_*` / `maxdiff_*` give the mean and largest absolute difference
 from the reference.
 
+The comparative analysis lives in `analysis/` at the repository root (separate from
+`src/analysis`), one `# %%`-cell script per task; for now `analysis/binary.py`. It covers
+quality (accuracy, balanced accuracy, minority-class precision/recall/F1, macro F1, MCC),
+cost (trees per sample, also per class), agreement with `full_voting` (overall, class-balanced,
+on the minority class), speed (median ± std, batch and online) and equivalence tests against
+`full_voting` (binomial `agree >= pi`, McNemar, TOST ±0.5 pp, Friedman + Nemenyi, Wilcoxon).
+By default it reads `data/results/binary_test.parquet`, a quick-analysis file it builds from
+`classification_all.parquet` (binary datasets, seeds 1-3); set `RESULTS_FILE = FULL_FILE`
+for the full file. Run it cell by cell in VS Code, or from the repository root:
+
+```sh
+python analysis/binary.py
+```
+
 ### Adding an inference method
 
 The code is type-annotated and keeps docstrings short; the reasoning behind each module is in
@@ -449,6 +463,8 @@ data/
   real_data/                 UCI datasets (downloaded, git-ignored)
   tablice/                   IB pruning stop tables
   results/                   benchmark output (git-ignored)
+analysis/                    comparative analysis of the results, # %% cells per task
+  binary.py                  binary classification: quality, cost, agreement, speed, tests
 src/
   config.py                  reads config.toml
   methods/                   inference methods, one module each
