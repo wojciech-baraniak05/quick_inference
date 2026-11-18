@@ -17,7 +17,7 @@ out_file = "results/classification_all.parquet"
 drop_columns = ["year", "CO"]
 
 modes = ["batch", "online"]
-seeds = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+seeds = [1]
 test_size = 0.3
 # zbiór walidacyjny dla HYPER_pi98_val i MARGIN_k0_val: 10% całego zbioru, więc las (wspólny
 # dla wszystkich metod) uczy się na 60% danych zamiast 70%. 0 = bez zbioru walidacyjnego,

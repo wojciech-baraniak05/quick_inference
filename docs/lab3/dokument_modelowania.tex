@@ -1,0 +1,1145 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[a4paper, margin=1in]{geometry}
+\usepackage[polish]{babel}
+
+\usepackage{booktabs,tabularx,array}
+\usepackage{graphicx}
+\usepackage[table]{xcolor}
+\usepackage[most]{tcolorbox}
+\usepackage{xltabular}
+\usepackage{enumitem}
+
+% --- dodatkowe pakiety (diagramy, tabele hierarchiczne, odnośniki) ---
+\usepackage{multirow}
+\usepackage{float}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,backgrounds,calc,shapes.geometric,shapes.misc,babel}
+\usepackage[hidelinks]{hyperref}
+
+% --- kolory: poziomy hierarchii w tabelach konfiguracji i elementy diagramów ---
+\definecolor{lvlA}{RGB}{176,196,222}   % poziom 1: sekcja pliku
+\definecolor{lvlB}{RGB}{208,222,238}   % poziom 2: grupa
+\definecolor{lvlC}{RGB}{232,240,248}   % poziom 3: typ metody
+\definecolor{cPlik}{RGB}{222,235,250}
+\definecolor{cSkrypt}{RGB}{255,232,204}
+\definecolor{cZrodlo}{RGB}{220,242,220}
+\definecolor{cWynik}{RGB}{245,225,245}
+\definecolor{cModul}{RGB}{240,240,240}
+
+\newcommand{\code}[1]{\texttt{#1}}
+
+% --- bloki z poleceniami / fragmentami plików (tylko ASCII i polskie litery przez literate) ---
+\newtcblisting{konsola}[1][]{
+  listing only, colback=gray!5, colframe=gray!55, boxrule=0.4pt, arc=1mm,
+  left=2mm, right=2mm, top=0.5mm, bottom=0.5mm,
+  listing options={basicstyle=\ttfamily\footnotesize, columns=fullflexible,
+    keepspaces=true, breaklines=true, showstringspaces=false,
+    literate={ą}{{\k{a}}}1 {ć}{{\'c}}1 {ę}{{\k{e}}}1 {ł}{{\l{}}}1 {ń}{{\'n}}1
+             {ó}{{\'o}}1 {ś}{{\'s}}1 {ź}{{\'z}}1 {ż}{{\.z}}1
+             {Ą}{{\k{A}}}1 {Ć}{{\'C}}1 {Ę}{{\k{E}}}1 {Ł}{{\L{}}}1 {Ń}{{\'N}}1
+             {Ó}{{\'O}}1 {Ś}{{\'S}}1 {Ź}{{\'Z}}1 {Ż}{{\.Z}}1},
+  #1}
+
+% --- style diagramów ---
+\tikzset{
+  >={Stealth[length=2.2mm]},
+  plik/.style={draw=blue!50!black, fill=cPlik, rounded corners=1pt, font=\ttfamily\scriptsize,
+               align=center, minimum height=8mm, inner sep=3pt},
+  skrypt/.style={draw=orange!60!black, fill=cSkrypt, rounded corners=3mm, font=\scriptsize,
+                 align=center, minimum height=8mm, inner sep=3pt},
+  zrodlo/.style={draw=green!40!black, fill=cZrodlo, dashed, font=\scriptsize, align=center,
+                 minimum height=8mm, inner sep=3pt},
+  wynik/.style={draw=violet!60!black, fill=cWynik, font=\scriptsize, align=center,
+                minimum height=8mm, inner sep=3pt, chamfered rectangle, chamfered rectangle xsep=2pt},
+  modul/.style={draw=black!60, fill=cModul, font=\scriptsize, align=center,
+                minimum height=7mm, inner sep=3pt},
+  krok/.style={draw=black!70, fill=white, rounded corners=1pt, font=\scriptsize, align=center,
+               minimum height=7mm, inner sep=3pt, text width=#1},
+  krok/.default=4.2cm,
+  petla/.style={draw=black!50, dashed, rounded corners=2mm, inner sep=3mm},
+  strz/.style={->, thick, black!70},
+  etyk/.style={font=\tiny\itshape, black!70, align=center},
+  warstwa/.style={draw=black!25, fill=black!3, rounded corners=2mm, inner sep=2.5mm},
+}
+
+\large
+\title{Projekt Zespołowy: Laboratorium 3}
+\begin{document}
+% babel-polish zamienia "c, "n, "o itd. na polskie litery; w tekście dokumentu cudzysłów
+% występuje tylko w wartościach TOML (np. "classification"), więc skrót jest wyłączony
+\shorthandoff{"}
+\begin{titlepage}
+	\begin{center}
+    \line(1,0){300}\\
+    [0.65cm]
+	\huge{\bfseries Analiza porównawcza metod wczesnego zakończenia inferencji w modelach zespołowych}\\
+	\line(1,0){300}\\
+	\textsc{\Large Dokument modelowania}\\
+	\textsc{\Large Projekt zespołowy: laboratorium 3}\\
+    \textsc{\Large wersja 1.0}\\
+	\textsc{\LARGE \today}\\
+	[5.5cm]
+	\end{center}
+	\begin{flushright}
+		\textsc{\Large Wojciech Baraniak}\\
+		\textsc{\Large Maciej Winkler}\\
+		[1cm]
+        \textsc{\Large Promotor: mgr inż.\ Stanisław Kaźmierczak}\\
+        \textsc{\Large Opiekun naukowy: prof.\ dr hab.\ inż.\ Jacek Mańdziuk}\\
+		[1cm]
+	\end{flushright}
+\end{titlepage}
+\newpage
+\tableofcontents
+
+\newpage
+
+% =====================================================================================
+\section*{Abstrakt}
+\addcontentsline{toc}{section}{Abstrakt}
+
+Las losowy złożony z setek drzew przy klasycznej predykcji odpytuje każde drzewo, choć
+dla większości próbek wynik głosowania jest przesądzony już po kilkudziesięciu głosach.
+Projekt bada metody \emph{wczesnego zakończenia inferencji} (ang.\ \emph{early stopping},
+\emph{dynamic pruning}), które przerywają głosowanie, gdy wynik pełnego zespołu jest
+wystarczająco pewny, i mierzy, ile pracy i czasu pozwalają zaoszczędzić oraz ile kosztuje
+to w jakości i zgodności z pełnym lasem.
+
+Niniejszy dokument opisuje stan implementacji po trzecim etapie projektu. Zaimplementowano
+cztery metody z literatury (statystyczny \emph{instance-based pruning}, HYPER, GLEE z
+systemu COMET oraz metodę opartą na marginesie lasu), metodę własną (HYPER z a priori
+mieszanym z rozkładem jednostajnym, opcjonalnie z regułą GLEE), warianty regresyjne
+oraz regułę wieloklasową ,,lider kontra druga klasa''. Całość badania jest sterowana jednym
+plikiem konfiguracyjnym w formacie TOML: skrypt benchmarku uczy lasy na wygenerowanych
+wcześniej zbiorach, kalibruje metody, mierzy predykcje w scenariuszach \emph{batch}
+i \emph{online} i zapisuje surowe wyniki do pliku Parquet, z którego osobny moduł
+analityczny liczy metryki i testy statystyczne.
+Dokument przedstawia architekturę kodu, przepływ danych i plików, format konfiguracji,
+procedury uruchomieniowe, parametry przykładowego pełnego badania (21 zbiorów
+syntetycznych, 10 powtórzeń, 15 metod), listę prac, które pozostały do wykonania, oraz
+budowę modelu: ustawienia lasu losowego i sposób głosowania drzew.
+
+% =====================================================================================
+\section*{Historia zmian}
+\addcontentsline{toc}{section}{Historia zmian}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}llp{3.6cm}X@{}}
+\toprule
+\textbf{Wersja} & \textbf{Data} & \textbf{Autorzy} & \textbf{Opis zmian} \\
+\midrule
+1.0 & 18.11.2026 & W.~Baraniak, M.~Winkler &
+Pierwsza wersja dokumentu: odniesienia do etapów 1 i 2, opis implementacji modułów,
+diagramy przepływu danych, format konfiguracji, procedury uruchomieniowe, parametry
+przykładowego badania, lista prac do wykonania, budowa modeli (parametry lasu,
+soft voting a hard voting). \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% =====================================================================================
+\section{Odniesienia do dokumentów z etapów 1 i 2}
+
+\subsection{Dokument wymagań (etap 1)}
+
+Dokument wymagań określił cel projektu: porównanie metod wczesnego zakończenia
+inferencji w zespołach drzew decyzyjnych pod względem kosztu predykcji (liczba
+odpytanych drzew, czas) oraz jakości i zgodności z predykcją pełnego zespołu.
+Tabela~\ref{tab:wymagania} zestawia główne wymagania z ich realizacją w kodzie.
+
+\begin{table}[H]
+\centering
+\footnotesize
+\caption{Realizacja wymagań z etapu 1.}
+\label{tab:wymagania}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4.4cm}X>{\centering\arraybackslash}p{1.7cm}@{}}
+\toprule
+\textbf{Wymaganie} & \textbf{Realizacja} & \textbf{Stan} \\
+\midrule
+Implementacja metod wczesnego stopu z literatury &
+IB pruning, HYPER, GLEE, MARGIN w pakiecie \code{src/methods/} &
+zrealizowane \\
+Metody odniesienia &
+\code{rf\_sklearn} (\code{rf.predict}, soft voting) i \code{full\_voting} (hard voting
+wszystkich drzew); w regresji \code{full\_averaging} &
+zrealizowane \\
+Zbiory syntetyczne o kontrolowanych własnościach &
+10 binarnych, 11 wieloklasowych, 8 regresyjnych (\code{generate\_datasets.py}) &
+zrealizowane \\
+Zbiory rzeczywiste &
+SUSY, Statlog Shuttle, Gas Turbine pobierane z UCI (\code{data\_download\_real.py});
+wstępna eksploracja w notatnikach \code{src/analysis/analysis\_*\_real.ipynb} &
+pobrane, nie zbadane w benchmarku \\
+Dwa scenariusze użycia &
+\emph{batch} (cały zbiór testowy naraz) i \emph{online} (próbki pojedynczo) &
+zrealizowane \\
+Miary jakości, kosztu i zgodności &
+accuracy, precision/recall/F1, MCC, \code{agree\_full}, \code{agree\_rf}, liczba drzew na
+próbkę, czas, przyspieszenie (\code{src/analysis}, \code{analysis/binary.py}) &
+zrealizowane \\
+Powtarzalność eksperymentów &
+wszystkie losowości sterowane ziarnami z konfiguracji; wyniki z metadanymi przebiegu &
+zrealizowane \\
+Testy statystyczne porównań &
+test dwumianowy, McNemar, TOST, Friedman + Nemenyi, Wilcoxon (\code{analysis/binary.py}) &
+tylko klasyfikacja binarna \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Analiza problemu i projekt rozwiązania (etap 2)}
+
+Dokument projektu z etapu 2 zaproponował, poza czterema metodami z literatury,
+rozszerzenia, które zostały zaimplementowane w tym etapie:
+
+\begin{itemize}[nosep]
+  \item \textbf{metoda własna} (\code{own}): HYPER z a priori
+        $\lambda P_{\mathrm{OOB}} + (1-\lambda) P_{\mathrm{jedn}}$, opcjonalnie połączona
+        z regułą GLEE (stop, gdy pozwala którakolwiek reguła);
+  \item \textbf{warianty regresyjne} IB pruning i GLEE (\code{ib\_reg}, \code{glee\_reg})
+        oraz regresyjna metoda własna z a priori wariancji wyjść drzew (\code{own\_reg});
+        reguły stopu sprawdzono z bezpośrednią ewaluacją wzorów (2), (6) i (10)--(11)
+        dokumentu projektu;
+  \item \textbf{reguła pary} dla wielu klas (\code{multiclass = "pair"}): porównanie
+        lidera z drugą klasą na tablicach binarnych;
+  \item \textbf{kolejność drzew}: stała, jedna losowa permutacja lasu
+        (\code{shuffled}) oraz osobna permutacja dla każdej próbki (\code{random});
+  \item \textbf{kalibracja na zbiorze walidacyjnym} (\code{calib = "val"}) zamiast na
+        głosach out-of-bag dla HYPER, metody własnej i MARGIN.
+\end{itemize}
+
+Poza dokumentem projektu dodano opcję \code{smooth\_mode = "mass"} dla HYPER i metody
+własnej: wygładzanie a priori zachowujące masę przy brzegu przestrzeni składów. Jest to
+propozycja własna; domyślne \code{"mean"} odpowiada kodowi autorów HYPER.
+
+Decyzje, których dokument projektu nie rozstrzygał, podjęto w implementacji
+następująco: a priori binarne dla reguły pary w HYPER budowane jest osobno dla każdej
+klasy z próbek, w których jest ona jedną z dwóch klas o największej liczbie głosów
+(klasa bez takich próbek dostaje rozkład jednostajny); domyślne
+\code{t\_min} w \code{glee\_reg} przyjęto jak \code{min\_votes} w GLEE (15/30/45), bo
+przy $t_{\min}=2$ reguła stawała po 2--3 drzewach; dodano tolerancję względną
+\code{delta\_std} (w odchyleniach standardowych $y_{\mathrm{train}}$); dla \code{own\_reg}
+przyjęto $\nu_0 = 5$ bez strojenia. Elementy projektu, które nie zostały jeszcze
+zrealizowane, zebrano w podrozdziale~\ref{sec:todo}.
+
+% =====================================================================================
+\section{Implementacja modułów}
+
+\subsection{Działający kod}
+
+\paragraph{Technologia.}
+Kod jest napisany w Pythonie ($\ge 3.12$) na bibliotekach \code{numpy}, \code{scipy},
+\code{pandas}, \code{pyarrow} i \code{scikit-learn}; analiza używa dodatkowo
+\code{matplotlib} i \code{seaborn}. Las losowy to \code{RandomForestClassifier} lub
+\code{RandomForestRegressor} ze scikit-learn. Wersje pakietów są przypięte w
+\code{requirements.txt} i \code{requirements-dev.txt} (m.in.\ scikit-learn 1.9.1,
+numpy 2.5.4, pandas 3.0.6). Funkcje i klasy mają adnotacje typów,
+a repozytorium zawiera zestaw testów \code{pytest} (81 przypadków, wszystkie przechodzą).
+
+\paragraph{Struktura repozytorium.}
+Tabela~\ref{tab:struktura} opisuje katalogi i ich odpowiedzialność. Kod dzieli się na
+cztery warstwy (konfiguracja, metody, benchmark, analiza), które komunikują się wyłącznie
+przez jasno określone obiekty: konfigurację czyta tylko skrypt \code{testing.py} (pakiety
+\code{methods} i \code{benchmarking} jej nie znają), a benchmark nie liczy żadnych metryk.
+
+\begin{table}[H]
+\centering
+\footnotesize
+\caption{Struktura repozytorium \code{quick\_inference}.}
+\label{tab:struktura}
+\begin{tabularx}{\textwidth}{@{}>{\ttfamily}p{5.1cm}X@{}}
+\toprule
+\normalfont\textbf{Ścieżka} & \textbf{Zawartość i odpowiedzialność} \\
+\midrule
+config.toml, configs/*.toml & pliki konfiguracyjne badań (jedyne miejsce z parametrami) \\
+src/config.py & wczytanie i walidacja konfiguracji, stałe modułu (\code{TASK}, \code{DATASETS}, \code{METHODS}, \dots) \\
+src/testing.py & skrypt benchmarku: łączy konfigurację z warstwą pomiarową \\
+src/methods/ & metody inferencji (klasy \code{InferenceMethod}), rejestr typów, generowanie tablic progów IB, głosy out-of-bag i walidacyjne \\
+src/benchmarking/ & wczytanie danych, trening lasu, pomiar predykcji i czasu, zapis wyników \\
+src/analysis/ & metryki z pliku wyników (\code{metrics.py}), podsumowanie (\code{summary.py}), notatniki eksploracji zbiorów rzeczywistych i wizualizacji zbiorów syntetycznych \\
+src/data\_generate/ & generowanie zbiorów syntetycznych i pobieranie zbiorów rzeczywistych \\
+analysis/binary.py & analiza porównawcza dla klasyfikacji binarnej: wykresy, tabele, testy statystyczne \\
+tests/, pytest.ini & testy jednostkowe metod i testy całego potoku; ustawienia \code{pytest} \\
+data/generated/, data/real\_data/ & zbiory danych (\code{.parquet}), nie są w repozytorium git \\
+data/tablice/ & tablice progów IB pruning (\code{.npz}), w repozytorium git \\
+data/results/ & pliki wyników benchmarku (\code{.parquet}), nie są w repozytorium git \\
+requirements.txt, requirements-dev.txt & przypięte wersje pakietów: benchmark oraz notatniki, analiza i testy \\
+setup\_windows.bat & automatyczna instalacja środowiska i przygotowanie danych \\
+README.md, implementacja.md, instrukcja.md, changes.md, data\_flow.md & dokumentacja: opis projektu i konfiguracji, opis metod i modułów, instrukcja, historia zmian, przepływ danych \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Przepływ danych -- widok ogólny.}
+Rysunek~\ref{fig:przeglad} pokazuje drogę danych od źródeł zewnętrznych, przez pliki
+pośrednie, do wyników analizy. Kolorem zielonym (linia przerywana) oznaczono źródła
+zewnętrzne, pomarańczowym skrypty, niebieskim pliki na dysku, a fioletowym produkty
+końcowe.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=7mm and 4mm]
+  % źródła
+  \node[zrodlo, text width=3.6cm] (uci) {Repozytorium UCI\\ \tiny archive.ics.uci.edu};
+  \node[zrodlo, text width=3.6cm, right=of uci] (skl) {Generatory scikit-learn\\ \tiny make\_classification, make\_regression, make\_friedman1};
+  \node[zrodlo, text width=3.6cm, right=of skl] (wzor) {Model urny / rekurencja\\ \tiny (bez danych, tylko $T$, $l$, $\pi$)};
+  % skrypty danych
+  \node[skrypt, text width=3.6cm, below=of uci] (dl) {data\_download\_real.py};
+  \node[skrypt, text width=3.6cm, below=of skl] (gen) {generate\_datasets.py\\ \tiny ziarno: \code{seed} z config.toml};
+  \node[skrypt, text width=3.6cm, below=of wzor] (gt) {generate\_table()};
+  % pliki danych
+  \node[plik, text width=3.6cm, below=of dl] (real) {data/real\_data/\\ *.parquet};
+  \node[plik, text width=3.6cm, below=of gen] (gend) {data/generated/\\ *.parquet};
+  \node[plik, text width=3.6cm, below=of gt] (tab) {data/tablice/\\ T\{T\}\_L\{l\}\_pi\{pi\}.npz};
+  % konfiguracja i benchmark
+  \node[plik, text width=3.6cm, below=12mm of real] (cfg) {config.toml\\ configs/*.toml};
+  \node[skrypt, text width=3.6cm, below=12mm of gend] (test) {src/testing.py\\ \tiny (benchmark)};
+  \node[plik, text width=3.6cm, below=12mm of tab] (res) {data/results/\\ \{out\_file\}.parquet};
+  % analiza
+  \node[skrypt, text width=3.6cm, below=of res] (an) {src/analysis\\ \tiny compute\_metrics, summary};
+  \node[skrypt, text width=3.6cm, left=of an] (bin) {analysis/binary.py};
+  \node[wynik, text width=3.4cm, below=of an] (o1) {tabele średnich,\\ kontrola \code{agree\_full} $\ge \pi$};
+  \node[wynik, text width=3.4cm, below=of bin] (o2) {wykresy, tabele,\\ testy statystyczne};
+
+  \draw[strz] (uci) -- (dl);
+  \draw[strz] (skl) -- (gen);
+  \draw[strz] (wzor) -- (gt);
+  \draw[strz] (dl) -- (real);
+  \draw[strz] (gen) -- (gend);
+  \draw[strz] (gt) -- (tab);
+  \draw[strz] (real.south) -- ++(0,-3mm) -| ([xshift=-10mm]test.north);
+  \draw[strz] (gend) -- (test);
+  \draw[strz] (tab.south) -- ++(0,-3mm) -| ([xshift=10mm]test.north);
+  \draw[strz] (cfg) -- node[etyk, above]{parametry} (test);
+  \draw[strz] (test) -- node[etyk, above]{surowe\\ predykcje} (res);
+  \draw[strz] (res) -- (an);
+  \draw[strz] (an) -- node[etyk, above]{metryki} (bin);
+  \draw[strz] (an) -- (o1);
+  \draw[strz] (bin) -- (o2);
+\end{tikzpicture}
+\caption{Przepływ danych w projekcie: od źródeł, przez pliki pośrednie, do wyników.}
+\label{fig:przeglad}
+\end{figure}
+
+\paragraph{Pozyskanie i generowanie danych.}
+Rysunek~\ref{fig:dane} szczegółowo pokazuje, skąd pochodzą pliki danych i jakie skrypty
+je tworzą. Wszystkie zbiory zapisywane są w jednolitym formacie Parquet: kolumny cech
+\code{f0}, \code{f1}, \dots, kolumna celu \code{target} oraz ewentualne kolumny
+dodatkowe, które nie są cechami (w \code{gas\_turbine}: \code{year} i drugi cel
+\code{CO}, pomijane dzięki \code{benchmark.drop\_columns}).
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=5mm and 6mm]
+  % kolumna UCI
+  \node[zrodlo, text width=4.3cm] (u1) {UCI \#279 SUSY\\ \tiny static/public/279/susy.zip (CSV.gz)};
+  \node[zrodlo, text width=4.3cm, below=of u1] (u2) {UCI \#148 Statlog (Shuttle)\\ \tiny static/public/148/data.csv};
+  \node[zrodlo, text width=4.3cm, below=of u2] (u3) {UCI \#551 Gas Turbine CO/NOx\\ \tiny static/public/551/data.csv};
+  \node[skrypt, text width=3.0cm, right=10mm of u2] (dl) {data\_download\_real.py\\ \tiny save(): cechy $\to$ f0..fn,\\ cel $\to$ target};
+  \node[plik, text width=4.2cm, right=10mm of dl, yshift=11mm] (r1) {real\_data/binary/susy.parquet\\ \tiny 5\,000\,000 wierszy, 18 cech};
+  \node[plik, text width=4.2cm, right=10mm of dl] (r2) {real\_data/multiclass/shuttle.parquet\\ \tiny 58\,000 wierszy, 7 klas};
+  \node[plik, text width=4.2cm, right=10mm of dl, yshift=-11mm] (r3) {real\_data/regression/\\gas\_turbine.parquet \tiny (cel NOX)};
+  \draw[strz] (u1.east) -- (dl);
+  \draw[strz] (u2.east) -- (dl);
+  \draw[strz] (u3.east) -- (dl);
+  \draw[strz] (dl.east) -- (r1.west);
+  \draw[strz] (dl.east) -- (r2.west);
+  \draw[strz] (dl.east) -- (r3.west);
+
+  % kolumna generatorów
+  \node[plik, text width=4.3cm, below=14mm of u3] (seed) {config.toml: \code{seed = 1}};
+  \node[zrodlo, text width=4.3cm, below=of seed] (sk) {scikit-learn: make\_classification,\\ make\_regression, make\_friedman1\\ \tiny + wstrzyknięcie outlierów (2\% wierszy, 10$\sigma$)};
+  \coordinate (mid) at ($(seed.east)!0.5!(sk.east)$);
+  \node[skrypt, text width=3.0cm, right=10mm of mid] (gen) {generate\_datasets.py};
+  \node[plik, text width=4.2cm, right=10mm of gen, yshift=11mm] (g1) {generated/binary/\\ \tiny 10 zbiorów, 1\,000--500\,000 wierszy};
+  \node[plik, text width=4.2cm, right=10mm of gen] (g2) {generated/multiclass/\\ \tiny 11 zbiorów, 3--20 klas};
+  \node[plik, text width=4.2cm, right=10mm of gen, yshift=-11mm] (g3) {generated/regression/\\ \tiny 8 zbiorów};
+  \draw[strz] (seed.east) -- (gen);
+  \draw[strz] (sk.east) -- (gen);
+  \draw[strz] (gen.east) -- (g1.west);
+  \draw[strz] (gen.east) -- (g2.west);
+  \draw[strz] (gen.east) -- (g3.west);
+
+  % tablice IB
+  \node[zrodlo, text width=4.3cm, below=10mm of sk] (par) {parametry $T$, $l$, $\pi$\\ \tiny (wywołanie ręczne z \code{src/})};
+  \node[skrypt, text width=3.0cm, right=10mm of par] (gt) {methods.generate\_table()\\ \tiny rekurencja \code{win\_probability}};
+  \node[plik, text width=4.2cm, right=10mm of gt] (t1) {tablice/T501\_L2\_pi98.npz\\ T501\_L3\_pi98.npz, T51\_L2\_pi95.npz};
+  \draw[strz] (par) -- (gt);
+  \draw[strz] (gt) -- (t1);
+
+  % ramka setup
+  \begin{scope}[on background layer]
+    \node[petla, fit=(u1)(r1)(r3)(g3)(sk), label={[font=\scriptsize\bfseries, anchor=south east]north east:setup\_windows.bat (kroki 3 i 4)}] {};
+  \end{scope}
+\end{tikzpicture}
+\caption{Skąd pochodzą pliki danych. Zbiory syntetyczne i rzeczywiste tworzy skrypt
+\code{setup\_windows.bat} (lub ręczne wywołanie obu skryptów), tablice progów IB są
+generowane ręcznie i przechowywane w repozytorium.}
+\label{fig:dane}
+\end{figure}
+
+Tabela~\ref{tab:zbiory} wymienia zbiory syntetyczne. Każdy wariant sprawdza inną
+trudność: rozmiar zbioru, niezbalansowanie klas, szum etykiet, nieliniowość granicy
+decyzyjnej, dużą liczbę cech, współliniowość i różne skale cech oraz wartości odstające.
+
+\begin{table}[H]
+\centering
+\footnotesize
+\caption{Zbiory syntetyczne (\code{generate\_datasets.py}, ziarno \code{seed = 1}).}
+\label{tab:zbiory}
+\begin{tabularx}{\textwidth}{@{}>{\ttfamily}l>{\ttfamily}lrrrX@{}}
+\toprule
+\normalfont\textbf{binarne} & \normalfont\textbf{wieloklasowe} & \textbf{wiersze} & \textbf{cechy} & \textbf{klasy} & \textbf{własność} \\
+\midrule
+binary\_small & multi\_small & 1\,000 & 10 & 2 / 4 & mały zbiór \\
+binary\_large & multi\_large & 500\,000 & 20 & 2 / 5 & duży zbiór \\
+imbalanced & multi\_imbalanced & 10\,000 & 20 & 2 / 4 & 95:5, 70:20:7:3 \\
+binary\_check & multi\_check & 100\,000 & 5 & 2 / 3 & same cechy informatywne \\
+binary\_multi\_features & multi\_multi\_features & 50\,000 & 100 & 2 / 5 & dużo cech (50 informatywnych) \\
+noisy\_labels & multi\_noisy\_labels & 20\,000 & 20 & 2 / 5 & 25\% losowych etykiet \\
+hard\_nonlinear & multi\_hard\_nonlinear & 20\,000 & 10 & 2 / 4 & 6 skupisk na klasę, \code{class\_sep=0.5} \\
+rare\_event & multi\_rare\_class & 200\,000 & 30 & 2 / 3 & klasa 0,5\% \\
+collinear\_unscaled & multi\_collinear\_unscaled & 20\,000 & 40 & 2 / 4 & 24 cechy redundantne i 4 powtórzone, losowe przesunięcie i skala cech \\
+outliers & multi\_outliers & 20\,000 & 20 & 2 / 4 & 2\% wierszy zaburzonych o 10$\sigma$ \\
+--- & multi\_many\_classes & 50\,000 & 30 & 20 & dużo klas \\
+\midrule
+\multicolumn{6}{@{}p{\textwidth}@{}}{\normalfont regresja: \code{reg\_small}, \code{reg\_large}, \code{reg\_check}, \code{reg\_multi\_features},
+\code{reg\_noisy}, \code{reg\_collinear}, \code{reg\_outliers}, \code{reg\_hard\_nonlinear} (Friedman \#1)} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Przebieg benchmarku.}
+Skrypt \code{src/testing.py} realizuje pętlę po zbiorach danych i ziarnach (rysunek~\ref{fig:benchmark}).
+Dla każdej pary (zbiór, ziarno) dzieli dane, uczy jeden las, wspólny dla wszystkich
+metod, tworzy \emph{nowe} instancje metod i kalibruje je na tym lesie, mierzy predykcje
+w wybranych scenariuszach i od razu dopisuje wyniki do pliku. Zbiór testowy jest wspólny
+dla wszystkich metod, więc porównania są parami (ang.\ \emph{paired}).
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=4.5mm]
+  \node[plik, text width=4.2cm] (cfg) {config.toml $\to$ config.py\\ \tiny stałe TASK, DATASETS, SEEDS, MODES, METHODS, \dots};
+  \node[krok, below=of cfg] (bm) {\code{build\_methods(METHODS)}\\ \tiny walidacja konfiguracji, lista metod};
+  \node[krok, below=of bm] (fd) {\code{find\_datasets(DATASETS)}\\ \tiny folder $\to$ wszystkie pliki *.parquet};
+  \node[krok, below=11mm of fd] (ld) {\code{load\_dataset(path, DROP\_COLUMNS)} $\to X, y$};
+  \node[krok, below=11mm of ld] (sp) {\code{train\_test\_split}: test (\code{test\_size})\\ \tiny opcjonalnie drugi podział: walidacja (\code{val\_size})};
+  \node[krok, below=of sp] (tf) {\code{train\_forest}\\ \tiny $n$\_trees, max\_depth (z nadpisaniami per zbiór), ziarno};
+  \node[krok, below=of tf] (kal) {\code{ForestMethods.add\_method(m)}\\ $\to$ \code{m.fit(rf, X\_train, y\_train, X\_val, y\_val)}};
+  \node[krok, below=of kal] (run) {\code{Benchmark.run(MODES)}\\ \tiny batch: cały \code{X\_test}; online: pierwsze \code{n\_online} próbek;\\ czas = mediana z \code{n\_repeats}};
+  \node[krok, below=of run] (rel) {\code{release()} -- zwolnienie lasu i danych};
+  \node[krok, below=of rel] (add) {\code{BenchmarkSuite.add} $\to$ \code{store\_runs}};
+  \node[plik, below=8mm of add, text width=4.2cm] (res) {data/results/\{out\_file\}.parquet};
+
+  % źródła dla fit
+  \node[plik, right=12mm of kal, text width=3.6cm] (npz) {data/tablice/*.npz\\ \tiny (IB pruning: dobór wg $T$, $l$, $\pi$)};
+  \node[modul, right=12mm of tf, text width=3.6cm] (oob) {głosy out-of-bag lasu\\ \tiny HYPER, OWN, MARGIN (\code{calib="oob"})};
+  \node[modul, right=12mm of sp, text width=3.6cm] (val) {\code{X\_val}, \code{y\_val}\\ \tiny HYPER, OWN, MARGIN (\code{calib="val"})};
+  \node[modul, left=12mm of kal, text width=3.2cm] (glee) {tylko $T$ i $\pi$\\ \tiny GLEE: tablica liczona w \code{fit}};
+  \node[plik, left=12mm of ld, text width=3.2cm] (data) {data/generated/\dots\\ data/real\_data/\dots};
+  \node[modul, left=12mm of run, text width=3.2cm] (tryb) {\code{predict\_batch(X)}\\ \code{predict\_one(x)}\\ \tiny $\to$ (y\_pred, n\_used)};
+
+  \draw[strz] (cfg) -- (bm);
+  \draw[strz] (bm) -- (fd);
+  \draw[strz] (fd) -- (ld);
+  \draw[strz] (ld) -- (sp);
+  \draw[strz] (sp) -- (tf);
+  \draw[strz] (tf) -- (kal);
+  \draw[strz] (kal) -- (run);
+  \draw[strz] (run) -- (rel);
+  \draw[strz] (rel) -- (add);
+  \draw[strz] (add) -- node[etyk, right]{zapis od razu\\ po przebiegu} (res);
+  \draw[strz, densely dashed] (npz.west) -- ([yshift=-2mm]kal.east);
+  \draw[strz, densely dashed] (oob.south) -- ++(0,-1mm) -| ([xshift=10mm]kal.north);
+  \draw[strz, densely dashed] (val.west) -- ++(-4mm,0) |- ([yshift=2.5mm]kal.east);
+  \draw[strz, densely dashed] (glee) -- (kal);
+  \draw[strz, densely dashed] (data) -- (ld);
+  \draw[strz, densely dashed] (tryb) -- (run);
+
+  \begin{scope}[on background layer]
+    \node[petla, fit=(sp)(add), label={[font=\scriptsize\bfseries, anchor=south west, xshift=1mm]north west:dla każdego ziarna z \code{seeds}}] (p2) {};
+    \node[petla, fit=(ld)(p2), inner sep=4mm, label={[font=\scriptsize\bfseries, anchor=south west, xshift=1mm]north west:dla każdego pliku z \code{datasets}}] {};
+  \end{scope}
+\end{tikzpicture}
+\caption{Przebieg skryptu \code{src/testing.py}. Linie przerywane: dane, z których
+korzystają metody przy kalibracji (\code{fit}) i pomiarze.}
+\label{fig:benchmark}
+\end{figure}
+
+Rysunek~\ref{fig:podzial} pokazuje podział jednego zbioru danych w przebiegu oraz to, do
+czego służy każda część. Zbiór walidacyjny jest odkładany z danych uczących \emph{przed}
+treningiem lasu, więc las go nie widzi; \code{val\_size} jest udziałem w \emph{całym}
+zbiorze, dlatego przy \code{test\_size = 0.3} i \code{val\_size = 0.1} las uczy się na 60\%
+danych.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+  \fill[blue!20] (0,0) rectangle (7.2,0.8);
+  \fill[orange!30] (7.2,0) rectangle (8.4,0.8);
+  \fill[green!25] (8.4,0) rectangle (12,0.8);
+  \draw (0,0) rectangle (12,0.8);
+  \draw (7.2,0) -- (7.2,0.8); \draw (8.4,0) -- (8.4,0.8);
+  \node[font=\scriptsize] at (3.6,0.4) {\code{X\_train}: 60\%};
+  \node[font=\scriptsize] at (7.8,0.4) {\code{X\_val}};
+  \node[font=\scriptsize] at (10.2,0.4) {\code{X\_test}: 30\%};
+  \node[font=\tiny] at (7.8,1.05) {10\%};
+  \node[krok=3.6cm, below=8mm] (a) at (3.6,0) {trening lasu (bootstrap)\\ kalibracja out-of-bag:\\ \tiny HYPER, OWN, MARGIN, \code{own\_reg}};
+  \node[krok=2.2cm, below=8mm] (b) at (7.8,0) {kalibracja\\ \code{calib = "val"}\\ \tiny (gdy \code{val\_size} $>0$)};
+  \node[krok=2.8cm, below=8mm] (c) at (10.6,0) {pomiar: \emph{batch} -- całość,\\ \emph{online} -- pierwsze \code{n\_online}\\ \tiny wspólny dla wszystkich metod};
+  \draw[strz] (3.6,0) -- (a);
+  \draw[strz] (7.8,0) -- (b);
+  \draw[strz] (10.2,0) -- (c);
+\end{tikzpicture}
+\caption{Podział danych w jednym przebiegu (przykład: \code{test\_size = 0.3},
+\code{val\_size = 0.1}); podziały zależą od ziarna przebiegu.}
+\label{fig:podzial}
+\end{figure}
+
+\paragraph{Metody inferencji.}
+Wszystkie metody implementują wspólny kontrakt \code{InferenceMethod}:
+\code{fit(rf, X\_train, y\_train, X\_val, y\_val)}, \code{predict\_batch(X)} oraz
+\code{predict\_one(x)}; obie metody predykcji zwracają parę (predykcje, liczba
+odpytanych drzew na próbkę). Klasy pośrednie zawierają wspólne pętle głosowania
+(\code{FixedVoting}, \code{SequentialPruning}, a w regresji \code{SequentialRegression}),
+więc nowa metoda podaje jedynie regułę stopu albo wybór drzew (rysunek~\ref{fig:klasy}).
+Drzewa są ewaluowane przez lekką klasę \code{FastTree} (zejście po drzewie i odczyt klasy
+liścia bez walidacji wejścia scikit-learn; w regresji \code{FastRegTree}), co dla
+pojedynczej próbki skraca wywołanie drzewa z ok.\ 68\,$\mu$s do kilku mikrosekund; dzięki
+temu pomiar czasu mierzy metody, a nie narzut biblioteki. Metoda odniesienia
+\code{rf\_sklearn} celowo używa oryginalnego \code{rf.predict}.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    kl/.style={modul, font=\ttfamily\scriptsize, minimum height=6mm},
+    abs/.style={kl, fill=black!12, font=\ttfamily\itshape\scriptsize},
+    dz/.style={-{Triangle[open, length=2.2mm]}, black!70}]
+  % poziom 0
+  \node[abs] (base) at (0,0) {InferenceMethod};
+  % poziom 1
+  \node[kl]  (skl)   at (-6.0,-1.3) {SklearnRF};
+  \node[abs] (fixed) at (-3.4,-1.3) {FixedVoting};
+  \node[abs] (seq)   at ( 0.3,-1.3) {SequentialPruning};
+  \node[abs] (reg)   at ( 4.6,-1.3) {RegressionMethod};
+  % poziom 2
+  \node[kl] (full) at (-4.6,-2.6) {FullVoting};
+  \node[kl] (marg) at (-2.3,-2.6) {MarginEarlyStop};
+  \node[kl] (fa)   at ( 2.6,-2.6) {FullAveraging};
+  \node[kl] (sklr) at ( 6.3,-2.6) {SklearnRFReg};
+  % poziom 3
+  \node[kl]  (ib)   at (-1.9,-3.9) {IBPruning};
+  \node[kl]  (hyp)  at ( 0.3,-3.9) {Hyper};
+  \node[kl]  (glee) at ( 2.1,-3.9) {Glee};
+  \node[abs] (sr)   at ( 5.0,-3.9) {SequentialRegression};
+  % poziom 4
+  \node[kl] (own) at (-0.6,-5.2) {Own};
+  \node[kl] (ibr) at ( 2.2,-5.2) {IBRegression};
+  \node[kl] (gr)  at ( 4.5,-5.2) {GleeRegression};
+  \node[kl] (or)  at ( 6.8,-5.2) {OwnRegression};
+  % dziedziczenie (strzałka do klasy bazowej)
+  \foreach \dziecko/\rodzic in {skl/base, fixed/base, seq/base, reg/base,
+                     full/fixed, marg/fixed, fa/reg, sklr/reg,
+                     ib/seq, hyp/seq, glee/seq, sr/reg,
+                     own/hyp, ibr/sr, gr/sr, or/sr}
+    \draw[dz] (\dziecko.north) -- (\rodzic.south);
+\end{tikzpicture}
+\caption{Hierarchia klas metod (\code{src/methods/}). Kursywą oznaczono klasy abstrakcyjne:
+\code{FixedVoting} -- stała lista drzew dla każdej próbki, \code{SequentialPruning}
+i \code{SequentialRegression} -- głosowanie sekwencyjne z regułą stopu.}
+\label{fig:klasy}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\footnotesize
+\caption{Zaimplementowane metody i źródła danych, z których korzystają przy kalibracji.}
+\label{tab:metody}
+\begin{tabularx}{\textwidth}{@{}>{\ttfamily}lX>{\raggedright\arraybackslash}p{4.3cm}@{}}
+\toprule
+\normalfont\textbf{Typ} & \textbf{Reguła} & \textbf{Kalibracja w \code{fit}} \\
+\midrule
+rf\_sklearn & \code{rf.predict} ze scikit-learn (soft voting) & brak \\
+full\_voting & hard voting wszystkich $T$ drzew (odniesienie dla \code{agree\_full}) & brak \\
+ib\_pruning & stop, gdy $P(\text{lider wygra po } T \text{ głosach}) \ge \pi$ przy a priori jednostajnym (model urny) & tablica progów z pliku \code{.npz} \\
+hyper & jak IB, a priori rozkładu głosów szacowane z danych & głosy OOB lub walidacyjne \\
+glee & dolna granica przedziału ufności udziału lidera $> 0{,}5$ (poprawka na populację skończoną) & tablica z $T$ i $\pi$ \\
+margin & pierwsze $N^* = \lceil N(\mu + k\sigma)\rceil$ drzew rankingu MeanD-M & margines na danych OOB lub walidacyjnych \\
+own & HYPER z a priori $\lambda P_{\mathrm{OOB}} + (1-\lambda)P_{\mathrm{jedn}}$, opcjonalnie lub GLEE & głosy OOB lub walidacyjne \\
+\midrule
+full\_averaging & średnia wszystkich drzew (regresja) & brak \\
+ib\_reg & przedział $t$-Studenta dla średniej pełnego lasu w $\pm\delta$ & tylko $T$, $\pi$, $\delta$ \\
+glee\_reg & przedział normalny z poprawką na populację skończoną & tylko $T$, $\pi$, $\delta$ \\
+own\_reg & jak \code{ib\_reg}, z a priori wariancji wyjść drzew ($\nu_0$ pseudoobserwacji) & predykcje OOB \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Poprawki zgodności z artykułami źródłowymi.}
+16.11.2026 metody HYPER, GLEE i MARGIN dopasowano do artykułów źródłowych i kodu autorów:
+tablica progów HYPER jest liczona na zwykłych prawdopodobieństwach (poprzednie skalowanie
+iloczynów silni dawało zbyt niskie progi dla dużych $T$), remis w pełnym zespole liczy się
+jako porażka lidera (przy a priori jednostajnym HYPER daje teraz dokładnie te same progi
+co IB pruning), a wygładzanie a priori uśrednia tylko możliwe składy urny; GLEE domyślnie
+losuje kolejność drzew osobno dla każdej próbki (\code{order = "random"}, \code{seed = 0},
+nazwa \code{GLEE\_pi98\_rand}); w MARGIN liczba drzew $N^*$ jest zaokrąglana w górę.
+Wyniki policzone przed tą zmianą są nieaktualne dla HYPER, OWN, GLEE i MARGIN
+(podrozdział~\ref{sec:todo}).
+
+\paragraph{Format pliku wyników.}
+Benchmark nie liczy metryk: zapisuje do jednego pliku Parquet wiersz na (przebieg,
+scenariusz, metoda) z ustawieniami przebiegu i surowymi tablicami predykcji
+(tabela~\ref{tab:wyniki}). Metryki liczy później moduł \code{src/analysis}, dlatego
+poprawka lub nowa metryka obejmuje także wcześniej policzone przebiegi.
+
+\begin{table}[H]
+\centering
+\footnotesize
+\caption{Kolumny pliku wyników \code{data/<out\_file>}.}
+\label{tab:wyniki}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{5.6cm}X@{}}
+\toprule
+\textbf{Kolumny} & \textbf{Znaczenie} \\
+\midrule
+\code{dataset}, \code{seed} & zbiór danych i powtórzenie \\
+\code{task}, \code{n\_trees}, \code{max\_depth}, \code{val\_size}, \code{sklearn\_soft\_voting},
+\code{T}, \code{l}, \code{n\_test}, \code{n\_online}, \code{n\_repeats} & ustawienia przebiegu \\
+\code{mode}, \code{method} & scenariusz (\code{batch}/\code{online}) i nazwa metody \\
+\code{pi}, \code{delta} & poziom ufności i tolerancja metody (puste, gdy metoda ich nie ma) \\
+\code{time\_s}, \code{date} & czas predykcji (mediana z \code{n\_repeats}), data obliczenia \\
+\code{y\_true}, \code{y\_pred}, \code{n\_used} & tablice na próbkę: etykieta, predykcja, liczba odpytanych drzew \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Analiza wyników.}
+Rysunek~\ref{fig:analiza} pokazuje drugą, niezależną od benchmarku część potoku.
+\code{compute\_metrics} zamienia surowe tablice na metryki: accuracy, makro
+precision/recall/F1, zgodność z \code{rf\_sklearn} i \code{full\_voting}
+(\code{agree\_rf}, \code{agree\_full}), czas na próbkę, przyspieszenie oraz liczbę
+odpytanych drzew (\code{trees\_mean}, \code{trees\_median}, \code{trees\_max},
+\code{trees\_frac}); w regresji MAE, RMSE, $R^2$ oraz średnią i maksymalną różnicę od
+pełnego lasu. Skrypt \code{analysis/binary.py} dokłada miary dla klasy mniejszościowej,
+MCC, zrównoważoną dokładność, zgodność w podziale na klasy, koszt na klasie rzadkiej
+i częstej oraz testy statystyczne.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=6mm and 8mm]
+  \node[plik, text width=3.6cm] (full) {results/\\ classification\_all.parquet};
+  \node[skrypt, text width=3.0cm, right=of full] (cut) {binary.py, komórka 1\\ \tiny zbiory binarne, seedy 1--3};
+  \node[plik, text width=3.0cm, right=of cut] (test) {results/\\ binary\_test.parquet};
+  \node[skrypt, text width=3.6cm, below=10mm of full] (cm) {analysis.compute\_metrics\\ \tiny wiersz na (przebieg, tryb, metoda)};
+  \node[skrypt, text width=3.0cm, below=10mm of cut] (sum) {python -m analysis.summary};
+  \node[skrypt, text width=3.0cm, below=10mm of test] (bin) {analysis/binary.py\\ \tiny (pozostałe komórki)};
+  \node[wynik, text width=3.4cm, below=of cm] (w1) {tabela metryk\\ (DataFrame)};
+  \node[wynik, text width=3.0cm, below=of sum] (w2) {średnie po seedach,\\ przebiegi z \code{agree\_full} $<\pi$};
+  \node[wynik, text width=3.0cm, below=of bin] (w3) {wykresy, tabele,\\ McNemar, TOST,\\ Friedman/Nemenyi, Wilcoxon};
+  \draw[strz] (full) -- (cut);
+  \draw[strz] (cut) -- (test);
+  \draw[strz] (full) -- (cm);
+  \draw[strz] (cm) -- (w1);
+  \draw[strz] (cm) -- (sum);
+  \draw[strz] (sum) -- (w2);
+  \draw[strz] (test) -- (bin);
+  \draw[strz] (cm.south east) -- ++(0,-2mm) -| ([xshift=-8mm]bin.south) node[etyk, pos=0.25, below]{compute\_metrics};
+  \draw[strz] (bin) -- (w3);
+\end{tikzpicture}
+\caption{Przepływ danych w analizie wyników. Plik testowy \code{binary\_test.parquet}
+powstaje tylko wtedy, gdy go nie ma (albo przy \code{REBUILD\_TEST = True}) i pozwala
+szybko uruchamiać analizę; pełną analizę włącza \code{RESULTS\_FILE = FULL\_FILE}.}
+\label{fig:analiza}
+\end{figure}
+
+\paragraph{Pliki pośrednie i wynikowe -- podsumowanie.}
+
+\begin{table}[H]
+\centering
+\footnotesize
+\caption{Kto tworzy i kto czyta pliki projektu.}
+\label{tab:pliki}
+\begin{tabularx}{\textwidth}{@{}>{\ttfamily\raggedright\arraybackslash}p{4.3cm}>{\raggedright\arraybackslash}p{4.6cm}X@{}}
+\toprule
+\normalfont\textbf{Plik} & \textbf{Tworzy} & \textbf{Czyta} \\
+\midrule
+config.toml, configs/*.toml & użytkownik (ręcznie) & \code{src/config.py} (\code{tomllib}) \\
+data/generated/**/*.parquet & \code{generate\_datasets.py} (ziarno z \code{config.toml}) & \code{load\_dataset} w benchmarku \\
+data/real\_data/**/*.parquet & \code{data\_download\_real.py} (UCI) & \code{load\_dataset}, notatniki \code{src/analysis/*.ipynb} \\
+data/tablice/*.npz & \code{methods.generate\_table} & \code{IBPruning.fit} (dobór wg $T$, $l$, $\pi$) \\
+data/results/*.parquet & \code{store\_runs} (zapis atomowy przez plik tymczasowy) & \code{analysis.compute\_metrics}, \code{analysis.summary}, \code{analysis/binary.py} \\
+data/results/binary\_test.parquet & \code{analysis/binary.py} (wycinek pełnego pliku) & \code{analysis/binary.py} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Format pliku konfiguracyjnego.}
+Badanie jest w całości opisane plikiem TOML (domyślnie \code{config.toml} w katalogu głównym,
+inny plik można podać jako argument skryptu lub w zmiennej środowiskowej \code{QI\_CONFIG}).
+Plik ma trzy poziomy: sekcje (\code{[benchmark]}, \code{[forest]}, tablica bloków
+\code{[[methods]]}), w nich grupy kluczy, a w przypadku metod -- typ metody i jego
+parametry. Tabele~\ref{tab:konf-ogolna} i~\ref{tab:konf-metody} oddają tę hierarchię:
+komórka wyższego poziomu obejmuje wszystkie wiersze należące do niej, więc im niższy
+poziom, tym mniejsza wysokość komórki.
+
+\begin{table}[H]
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\caption{Format pliku konfiguracyjnego: klucz główny, \code{[benchmark]} i \code{[forest]}.
+Kolumny od lewej to kolejne poziomy hierarchii.}
+\label{tab:konf-ogolna}
+\begin{tabularx}{\textwidth}{|>{\columncolor{lvlA}}c|>{\raggedright\arraybackslash}p{2.8cm}|>{\ttfamily}p{3.3cm}|>{\raggedright\arraybackslash}p{2.6cm}|X|}
+\hline
+\rowcolor{black!15}
+\textbf{Sekcja} & \textbf{Grupa} & \normalfont\textbf{Klucz} & \textbf{Typ / przykład} & \textbf{Opis} \\
+\hline
+\scriptsize korzeń & --- & seed & int, \code{1} & ziarno generowania zbiorów syntetycznych (wymagane w każdym pliku) \\
+\hline
+ & & task & \code{"classification"} \textbar{} \code{"regression"} & rodzaj lasu i metod; bloki metod drugiego zadania są pomijane \\
+\cline{3-5}
+ & & datasets & lista ścieżek & foldery lub pliki względem \code{data/}; folder = wszystkie \code{*.parquet} \\
+\cline{3-5}
+ & & drop\_columns & lista nazw & kolumny zbioru, które nie są cechami \\
+\cline{3-5}
+ & \multirow{-4}{=}{zadanie i dane} & out\_file & ścieżka \code{.parquet} & plik wyników względem \code{data/} \\
+\cline{2-5}
+ & & seeds & lista int & powtórzenia: podział danych i las z danym ziarnem \\
+\cline{3-5}
+ & & test\_size & float, \code{0.3} & udział zbioru testowego \\
+\cline{3-5}
+ & \multirow{-3}{=}{podział danych} & val\_size & float, \code{0.0} & udział zbioru walidacyjnego w całym zbiorze ($0$ = brak) \\
+\cline{2-5}
+ & & modes & \code{["batch", "online"]} & scenariusze pomiaru \\
+\cline{3-5}
+ & & n\_online & int, \code{500} & liczba próbek w scenariuszu online \\
+\cline{3-5}
+ & \multirow{-3}{=}{scenariusze i pomiar} & n\_repeats & int, \code{4} & liczba pomiarów czasu (mediana) \\
+\cline{2-5}
+\multirow{-11}{*}{\rotatebox[origin=c]{90}{\ttfamily [benchmark]}} & odniesienie & sklearn\_soft\_voting & bool & dodaje \code{rf\_sklearn} oraz kolumny \code{agree\_rf}, \code{speedup\_vs\_rf} \\
+\hline
+ & & n\_trees & int, \code{501} & liczba drzew lasu \\
+\cline{3-5}
+ & \multirow{-2}{=}{wartości domyślne} & max\_depth & int \textbar{} \code{"none"} & maksymalna głębokość drzew (brak klucza = \code{"none"}) \\
+\cline{2-5}
+ & & n\_trees & int & nadpisanie dla zbioru \code{<zbiór>} \\
+\cline{3-5}
+\multirow{-4}{*}{\rotatebox[origin=c]{90}{\ttfamily [forest]}} & \multirow{-2}{=}{\ttfamily\scriptsize [forest.per\_dataset.\newline <zbiór>]} & max\_depth & int \textbar{} \code{"none"} & brak klucza = wartość z \code{[forest]} \\
+\hline
+\end{tabularx}
+\end{table}
+
+\begin{table}[H]
+\centering
+\scriptsize
+\renewcommand{\arraystretch}{1.1}
+\caption{Format pliku konfiguracyjnego: bloki \code{[[methods]]} (jeden blok = jedna
+badana metoda). Kolumna ,,Domyślnie'' podaje wartość przyjmowaną przy braku klucza.}
+\label{tab:konf-metody}
+\begin{tabularx}{\textwidth}{|>{\columncolor{lvlA}}c|c|>{\ttfamily}p{1.75cm}|>{\ttfamily}p{1.95cm}|>{\raggedright\arraybackslash}p{2.1cm}|X|}
+\hline
+\rowcolor{black!15}
+\textbf{Sekcja} & \textbf{Zadanie} & \normalfont\textbf{type} & \normalfont\textbf{Klucz} & \textbf{Domyślnie} & \textbf{Opis} \\
+\hline
+% --- klucze wspólne ---
+ & & & type & wymagany & typ metody (kolumna 3) \\
+\cline{4-6}
+ & & & name & z parametrów & nazwa w wynikach, np.\ \code{HYPER\_pi98\_val} \\
+\cline{4-6}
+ & & \multirow{-3}{=}{\normalfont każdy blok} & enabled & \code{true} & \code{false} wyłącza blok bez usuwania go \\
+\cline{3-6}
+ & & & order & \code{"fixed"} & \code{fixed} \textbar{} \code{shuffled} \textbar{} \code{random}: kolejność drzew \\
+\cline{4-6}
+ & \multirow{-5}{*}{\rotatebox[origin=c]{90}{wspólne}} & \multirow{-2}{=}{\normalfont wczesny stop\textsuperscript{*}} & seed & \code{None} & ziarno permutacji drzew (generator tworzony w \code{fit}) \\
+\cline{2-6}
+% --- klasyfikacja ---
+ & & full\_voting & --- & --- & bez parametrów \\
+\cline{3-6}
+ & & & pi & --- & poziom ufności; wybiera plik \code{T\{T\}\_L\{l\}\_pi\{100$\pi$\}.npz} \\
+\cline{4-6}
+ & & & table & --- & konkretny plik tablicy zamiast \code{pi} \\
+\cline{4-6}
+ & & \multirow{-3}{=}{ib\_pruning} & multiclass & \code{"full"} & \code{full} (2--3 klasy) \textbar{} \code{pair} (dowolna liczba klas) \\
+\cline{3-6}
+ & & & pi & \code{0.99} & poziom ufności \\
+\cline{4-6}
+ & & & n\_prior & \code{20000} & liczba próbek do a priori \\
+\cline{4-6}
+ & & & smooth & \code{5} & okno wygładzania a priori \\
+\cline{4-6}
+ & & & smooth\_mode & \code{"mean"} & \code{mean} (jak autorzy) \textbar{} \code{mass} (propozycja własna) \\
+\cline{4-6}
+ & & & multiclass & \code{"full"} & jak w \code{ib\_pruning} \\
+\cline{4-6}
+ & & \multirow{-6}{=}{hyper} & calib & \code{"oob"} & \code{oob} \textbar{} \code{val} (wymaga \code{val\_size} $>0$) \\
+\cline{3-6}
+ & & & pi & \code{0.99} & $\alpha = 1-\pi$ \\
+\cline{4-6}
+ & & & min\_votes & 15 / 30 / 45 & liczba głosów wymagana przed stopem (zależnie od $\alpha$) \\
+\cline{4-6}
+ & & & fpc & \code{true} & poprawka na populację skończoną \\
+\cline{4-6}
+ & & \multirow{-4}{=}{glee\textsuperscript{**}} & one\_sided & \code{true} & przedział jednostronny \\
+\cline{3-6}
+ & & & k & \code{0.0} & $N^* = \lceil N(\mu + k\sigma) \rceil$ \\
+\cline{4-6}
+ & & & ranking & \code{"mean\_d\_m"} & \code{mean\_d\_m} \textbar{} \code{accuracy} \textbar{} \code{none} \\
+\cline{4-6}
+ & & & n\_calib & \code{20000} & liczba próbek kalibracyjnych \\
+\cline{4-6}
+ & & \multirow{-4}{=}{margin} & calib & \code{"oob"} & jak w \code{hyper} \\
+\cline{3-6}
+ & & & pi & \code{0.99} & poziom ufności reguły HYPER \\
+\cline{4-6}
+ & & & lam & \code{0.5} & waga a priori OOB ($1$ = HYPER, $0$ = IB pruning) \\
+\cline{4-6}
+ & & & glee & \code{false} & stop, gdy pozwala HYPER lub GLEE \\
+\cline{4-6}
+ & & & pi\_glee & równe \code{pi} & poziom ufności reguły GLEE \\
+\cline{4-6}
+ & & & min\_votes & 15 / 30 / 45 & jak w \code{glee} \\
+\cline{4-6}
+ & \multirow{-24}{*}{\rotatebox[origin=c]{90}{klasyfikacja}} & \multirow{-6}{=}{own} & \normalfont\itshape pozostałe & jak w \code{hyper} & \code{n\_prior}, \code{smooth}, \code{smooth\_mode}, \code{multiclass}, \code{calib} \\
+\cline{2-6}
+% --- regresja ---
+ & & full\_averaging & --- & --- & bez parametrów \\
+\cline{3-6}
+ & & & pi & \code{0.99} & poziom ufności \\
+\cline{4-6}
+ & & & delta, delta\_std & dokładnie jeden wymagany & tolerancja w jednostkach celu albo w odchyleniach std.\ $y_{\mathrm{train}}$ \\
+\cline{4-6}
+ & & \multirow{-3}{=}{ib\_reg} & t\_min & \code{2} & minimalna liczba drzew przed stopem \\
+\cline{3-6}
+ & & & pi, delta, delta\_std & jak w \code{ib\_reg} & jak w \code{ib\_reg} \\
+\cline{4-6}
+ & & & t\_min & 15 / 30 / 45 & jak \code{min\_votes} w \code{glee} \\
+\cline{4-6}
+ & & \multirow{-3}{=}{glee\_reg} & fpc & \code{true} & poprawka na populację skończoną \\
+\cline{3-6}
+ & & & pi, delta, delta\_std & jak w \code{ib\_reg} & jak w \code{ib\_reg} \\
+\cline{4-6}
+ & & & nu0 & \code{5.0} & siła a priori wariancji ($0$ = \code{ib\_reg}) \\
+\cline{4-6}
+ & & & t\_min & \code{1} & a priori pozwala na stop po pierwszym drzewie \\
+\cline{4-6}
+\multirow{-40}{*}{\rotatebox[origin=c]{90}{\ttfamily [[methods]]}} & \multirow{-11}{*}{\rotatebox[origin=c]{90}{regresja}} & \multirow{-4}{=}{own\_reg} & n\_prior & \code{20000} & liczba próbek OOB do szacowania wariancji \\
+\hline
+\end{tabularx}
+
+\smallskip
+\begin{minipage}{\textwidth}
+\scriptsize
+\textsuperscript{*}\,\code{order} i \code{seed} mają wszystkie metody z wczesnym stopem, tj.\ wszystkie
+poza \code{full\_voting}, \code{full\_averaging} i \code{margin}.\\
+\textsuperscript{**}\,\code{glee} ma domyślnie \code{order = "random"} i \code{seed = 0}: drzewa są
+losowane bez zwracania osobno dla każdej próbki, jak w artykule źródłowym.
+\end{minipage}
+\end{table}
+
+Fragment rzeczywistego pliku (\code{configs/classification\_all.toml}) ilustruje, jak
+hierarchia z tabel przekłada się na składnię TOML:
+
+\begin{konsola}
+seed = 1
+
+[benchmark]
+task = "classification"
+datasets = ["generated/binary", "generated/multiclass"]
+out_file = "results/classification_all.parquet"
+drop_columns = ["year", "CO"]
+modes = ["batch", "online"]
+seeds = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+test_size = 0.3
+val_size = 0.1
+n_online = 500
+n_repeats = 4
+sklearn_soft_voting = true
+
+[forest]
+n_trees = 501
+max_depth = 5
+
+[forest.per_dataset.binary_multi_features]
+max_depth = "none"
+
+[[methods]]
+type = "hyper"            # HYPER_pi98_val
+pi = 0.98
+calib = "val"
+
+[[methods]]
+type = "own"              # OWN_lam0.5_pi98_glee_pair
+pi = 0.98
+lam = 0.5
+glee = true
+multiclass = "pair"
+\end{konsola}
+
+\paragraph{Uruchamianie kodu.}
+Skrypt benchmarku i podsumowanie uruchamia się z katalogu \code{src/} (moduły
+importują się jako moduły najwyższego poziomu); wyjątkiem są skrypty z
+\code{src/data\_generate/} i \code{analysis/binary.py}, które same ustawiają ścieżki,
+oraz testy, uruchamiane z katalogu głównego (\code{pytest.ini} dodaje \code{src} do ścieżki).
+Rysunek~\ref{fig:uruchomienie} pokazuje kolejność kroków, a poniżej podano polecenia.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=5mm]
+  \node[skrypt, text width=2.6cm] (s1) {1.\ setup\_windows.bat\\ \tiny venv, pakiety, dane};
+  \node[skrypt, text width=2.6cm, right=of s1] (s2) {2.\ (opcjonalnie)\\ generate\_table()};
+  \node[skrypt, text width=2.6cm, right=of s2] (s3) {3.\ python testing.py\\ \tiny [plik.toml]};
+  \node[skrypt, text width=2.6cm, right=of s3] (s4) {4.\ python -m\\ analysis.summary};
+  \node[skrypt, text width=2.6cm, below=of s4] (s5) {5.\ analysis/binary.py};
+  \node[skrypt, text width=2.6cm, below=of s1] (s0) {0.\ python -m pytest\\ \tiny weryfikacja kodu};
+  \draw[strz] (s1) -- (s2); \draw[strz] (s2) -- (s3); \draw[strz] (s3) -- (s4); \draw[strz] (s4) -- (s5);
+  \draw[strz, densely dashed] (s1) -- (s0);
+\end{tikzpicture}
+\caption{Kolejność uruchamiania. Krok 2 jest potrzebny tylko dla nowych $T$, $l$ lub $\pi$
+w IB pruning; krok 3 można powtarzać dla wielu plików konfiguracyjnych.}
+\label{fig:uruchomienie}
+\end{figure}
+
+W poniższych blokach wiersze zaczynające się od \code{\#} są komentarzami i nie należy ich
+wpisywać. Przygotowanie środowiska (Windows, z katalogu głównego; w innych systemach
+odpowiednio \code{python -m venv}, \code{pip install -r requirements-dev.txt} i dwa
+skrypty danych):
+
+\begin{konsola}
+# venv + pakiety + zbiory syntetyczne + zbiory UCI
+setup_windows.bat
+# ponowne pobranie zbiorów rzeczywistych
+setup_windows.bat --force-download
+.venv\Scripts\activate
+# testy
+python -m pytest
+\end{konsola}
+
+Nowa tablica progów IB pruning (z \code{src/}):
+
+\begin{konsola}
+python -c "from methods import generate_table; generate_table(T=501, l=2, pi=0.95)"
+\end{konsola}
+
+Benchmark i podsumowanie (z \code{src/}), a następnie analiza binarna (z katalogu głównego):
+
+\begin{konsola}
+cd src
+# config.toml z katalogu głównego
+python testing.py
+# inny plik konfiguracyjny
+python testing.py ../configs/classification_all.toml
+python -m analysis.summary ../data/results/classification_all.parquet
+cd ..
+# analiza porównawcza (klasyfikacja binarna)
+python analysis/binary.py
+\end{konsola}
+
+Skrypt \code{testing.py} oraz \code{analysis/binary.py} są podzielone na komórki
+\code{\# \%\%}, więc można je także uruchamiać interaktywnie w VS Code; obiekt z wynikami
+zostaje wtedy w pamięci. Na początku przebiegu skrypt wypisuje odczytaną konfigurację
+(liczbę zbiorów, ziarna, parametry lasu, nadpisania per zbiór i listę metod), a po każdym
+przebiegu wiersz postępu z nazwą zbioru, ziarnem, czasem i liczbą metod.
+
+\paragraph{Przykładowe badanie: pełny przebieg klasyfikacji.}
+Jako przykładowe badanie wykonano pełny przebieg klasyfikacji opisany plikiem
+\code{configs/classification\_all.toml} (tabela~\ref{tab:badanie}). Przebieg trwał ok.\
+8~godzin (15.11.2026, 17:17 -- 16.11.2026, 01:17) i dał plik
+\code{data/results/classification\_all.parquet} (5\,220 wierszy). 17.11.2026, już po
+poprawkach z 16.11, do tego samego pliku dopisano przebieg uzupełniający
+(\code{configs/classification\_quick.toml}: \code{binary\_check}, \code{multi\_check}
+i \code{multi\_many\_classes}, ziarna 1--5). Zastąpił on wiersze tych przebiegów dla
+metod o niezmienionych nazwach i dodał metodę \code{GLEE\_pi98\_rand}; plik ma teraz
+5\,250 wierszy (ok.\ 33\,MB) i 16 nazw metod.
+
+\begin{table}[H]
+\centering
+\footnotesize
+\caption{Parametry przykładowego badania (\code{configs/classification\_all.toml}).}
+\label{tab:badanie}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4.2cm}X@{}}
+\toprule
+\textbf{Parametr} & \textbf{Wartość} \\
+\midrule
+Zadanie & klasyfikacja (\code{RandomForestClassifier}, bootstrap) \\
+Zbiory & 21 syntetycznych: 10 binarnych i 11 wieloklasowych (3--20 klas); zbiory testowe od 300 do 150\,000 próbek \\
+Las & $T = 501$ drzew, \code{max\_depth = 5}; dla \code{binary\_multi\_features} i \code{multi\_multi\_features} bez limitu głębokości \\
+Podział danych & 60\% trening, 10\% walidacja (\code{val\_size = 0.1}), 30\% test \\
+Powtórzenia & 10 ziaren (1--10): podział danych i las zależą od ziarna; razem 210 przebiegów \\
+Scenariusze & \emph{batch} (cały zbiór testowy) i \emph{online} (pierwsze 500 próbek pojedynczo) \\
+Pomiar czasu & mediana z 4 powtórzeń, jeden wątek \\
+Odniesienia & \code{rf\_sklearn} (soft voting) i \code{full\_voting} (hard voting) \\
+Poziom ufności & $\pi = 0{,}98$ dla wszystkich metod probabilistycznych; MARGIN z $k = 0$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[H]
+\centering
+\footnotesize
+\caption{Metody w przykładowym badaniu. Warianty ,,full'' IB, HYPER i OWN działają dla
+2--3 klas i są pomijane (z komunikatem) na zbiorach z co najmniej 4 klasami; tam
+porównanie zapewniają warianty \code{\_pair}.}
+\label{tab:badanie-metody}
+\begin{tabularx}{\textwidth}{@{}>{\ttfamily}l>{\raggedright\arraybackslash}p{5.3cm}X@{}}
+\toprule
+\normalfont\textbf{Nazwa w wynikach} & \textbf{Parametry bloku} & \textbf{Zbiory} \\
+\midrule
+rf\_sklearn, full\_voting & --- & wszystkie 21 \\
+IB\_pi98 & \code{ib\_pruning}, $\pi=0{,}98$ & 12 (2--3 klasy) \\
+IB\_pi98\_pair & jw., \code{multiclass="pair"} & wszystkie 21 \\
+IB\_pi98\_rand & jw., \code{order="random"}, \code{seed=0} & 12 \\
+HYPER\_pi98 & \code{hyper}, $\pi=0{,}98$ & 12 \\
+HYPER\_pi98\_pair & jw., \code{multiclass="pair"} & wszystkie 21 \\
+HYPER\_pi98\_val & jw., \code{calib="val"} & 12 \\
+GLEE\_pi98\textsuperscript{\dag} & \code{glee}, $\pi=0{,}98$, kolejność stała (domyślna przed 16.11) & wszystkie 21 \\
+GLEE\_pi98\_rand\textsuperscript{\dag} & \code{glee}, $\pi=0{,}98$, domyślnie \code{order="random"}, \code{seed=0} & 3 (przebieg z 17.11) \\
+MARGIN\_k0, MARGIN\_k0\_val & \code{margin}, $k=0$; drugi z \code{calib="val"} & wszystkie 21 \\
+OWN\_lam0.5\_pi98 & \code{own}, $\pi=0{,}98$, $\lambda=0{,}5$ & 12 \\
+OWN\_lam0.5\_pi98\_glee & jw., \code{glee=true} & 12 \\
+OWN\_lam0.5\_pi98\_pair & jw., \code{multiclass="pair"} & wszystkie 21 \\
+OWN\_lam0.5\_pi98\_glee\_pair & jw., \code{glee=true}, \code{multiclass="pair"} & wszystkie 21 \\
+\bottomrule
+\multicolumn{3}{@{}p{\textwidth}@{}}{\scriptsize\textsuperscript{\dag}\,Pełny przebieg wykonano przed
+zmianą domyślnej kolejności GLEE na losową, więc ten sam blok \code{[[methods]]} dał
+\code{GLEE\_pi98}; w przebiegu uzupełniającym z 17.11 daje już \code{GLEE\_pi98\_rand}.
+Po ponownym pełnym przebiegu w pliku pozostaną stare wiersze \code{GLEE\_pi98} (inna nazwa
+metody nie zastępuje ich), więc trzeba je pominąć w analizie albo zacząć od nowego pliku.}
+\end{tabularx}
+\end{table}
+
+\subsection{Procedury automatyzacji}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Przygotowanie środowiska jednym poleceniem.} \code{setup\_windows.bat}
+        sprawdza wersję Pythona ($\ge 3.12$), tworzy lub ponownie używa środowiska
+        \code{.venv}, instaluje przypięte wersje pakietów (\code{requirements-dev.txt}),
+        generuje zbiory syntetyczne i pobiera zbiory rzeczywiste z UCI. Pobieranie jest
+        pomijane, gdy pliki już istnieją (flaga \code{--force-download} wymusza ponowne pobranie).
+  \item \textbf{Badanie sterowane konfiguracją.} Zmiana zbiorów, parametrów lasu, metod,
+        ich wariantów i scenariuszy nie wymaga zmian w kodzie. Rejestr
+        \code{METHOD\_TYPES} zamienia każdy blok \code{[[methods]]} na wywołanie
+        konstruktora i waliduje parametry (oraz unikalność nazw metod) przed rozpoczęciem
+        obliczeń, więc błąd w konfiguracji ujawnia się od razu, a nie po godzinach obliczeń.
+  \item \textbf{Automatyczny dobór zasobów metod.} IB pruning wybiera plik tablicy progów
+        pasujący do $T$ i $l$ danego lasu; metody, które nie pasują do lasu (np.\ wariant
+        \code{full} przy 4+ klasach, \code{calib="val"} bez zbioru walidacyjnego), są
+        pomijane z jednorazowym komunikatem, a reszta badania trwa dalej.
+  \item \textbf{Nadpisania per zbiór.} \code{[forest.per\_dataset.<zbiór>]} pozwala
+        jednym plikiem opisać badanie, w którym część zbiorów ma inną głębokość lub liczbę
+        drzew.
+  \item \textbf{Zapis przyrostowy i odporność na przerwanie.} Każdy przebieg (zbiór,
+        ziarno) jest dopisywany do pliku wyników od razu po zakończeniu, przez plik
+        tymczasowy i atomową podmianę. Przerwany benchmark zachowuje policzone przebiegi,
+        a nieudany zapis (np.\ plik otwarty w innym programie) nie przerywa obliczeń --
+        przebieg jest zapisywany przy następnej próbie.
+        Wiersz z tymi samymi ustawieniami, scenariuszem i metodą zastępuje zapisany, a
+        przebiegi z innymi ustawieniami dopisują się obok -- jeden plik może więc
+        gromadzić kolejne eksperymenty (np.\ różne \code{max\_depth}).
+  \item \textbf{Oszczędność pamięci.} Po przebiegu las i dane są zwalniane
+        (\code{Benchmark.release()}); w pamięci zostają tylko predykcje i czasy.
+  \item \textbf{Metryki poza benchmarkiem.} Ponieważ plik zawiera surowe predykcje,
+        nowe metryki i poprawki liczą się z istniejących wyników bez powtarzania
+        kosztownego benchmarku.
+  \item \textbf{Testy automatyczne.} \code{python -m pytest} uruchamia 81 testów:
+        poprawność reguł stopu (porównanie z bezpośrednią ewaluacją wzorów), zgodność
+        trybów batch i online, przypadki skrajne (np.\ $\lambda = 0$ i $\lambda = 1$ w
+        metodzie własnej), wczytywanie konfiguracji, rejestr metod, zapis i odczyt pliku
+        wyników oraz metryki.
+  \item \textbf{Szybka analiza.} \code{analysis/binary.py} sam buduje mały plik testowy
+        z pełnych wyników (zbiory binarne, ziarna 1--3), co pozwala rozwijać analizę bez
+        wczytywania 33\,MB danych.
+\end{itemize}
+
+\subsection{Co jeszcze nie zostało wykonane}
+\label{sec:todo}
+
+\begin{table}[H]
+\centering
+\footnotesize
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4.6cm}X@{}}
+\toprule
+\textbf{Zadanie} & \textbf{Stan i uwagi} \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Eksperymenty}} \\
+Ponowny pełny przebieg klasyfikacji &
+większość wierszy \code{classification\_all.parquet} powstała przed poprawkami zgodności
+HYPER, GLEE i MARGIN z artykułami źródłowymi (16.11.2026); aktualne są tylko przebiegi
+uzupełniające z 17.11 (3 zbiory, ziarna 1--5). Pełny przebieg trzeba powtórzyć,
+najlepiej do nowego pliku \\
+Przebieg regresji &
+metody i 8 zbiorów są gotowe, bloki są w \code{config.toml}; brak pliku wyników \\
+Zbiory rzeczywiste &
+SUSY, Shuttle i Gas Turbine są pobrane, ale nie były badane w benchmarku (SUSY: 5 mln
+wierszy, wymaga oszacowania czasu na jednym ziarnie) \\
+Dodatkowe zbiory &
+surowe pliki MetroPT, WISDM i czujników gazu (\code{data/real\_data/extra\_time\_data})
+nie są jeszcze przekształcone do formatu projektu \\
+Wpływ parametrów &
+badania dla różnych $\pi$ (wymaga nowych tablic IB), różnych $T$ i \code{max\_depth}
+oraz różnych $k$ w MARGIN i $\lambda$ w metodzie własnej \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Analiza}} \\
+Analiza wieloklasowa i regresyjna &
+\code{analysis/} zawiera dotąd tylko skrypt dla klasyfikacji binarnej \\
+Pełna analiza binarna &
+\code{analysis/binary.py} uruchamiany na pliku testowym (ziarna 1--3, wycięty 16.11 z
+wyników sprzed poprawek); po ponownym przebiegu trzeba odbudować plik testowy
+(\code{REBUILD\_TEST = True}) albo przełączyć się na pełny plik \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Elementy dokumentu projektu (etap 2)}} \\
+Kalibracja do wspólnego poziomu niezgodności &
+dobór $\pi$ / $k$ tak, by metody miały ten sam odsetek niezgodności na zbiorze
+walidacyjnym -- nie zaimplementowano \\
+Strojenie $\nu_0$ w \code{own\_reg} i $k$ w MARGIN &
+obecnie wartości stałe z konfiguracji \\
+Szybki ewaluator drzew (Numba) &
+nie zaimplementowano; obecnie \code{FastTree} na \code{tree\_.apply} \\
+Inne zespoły niż las losowy &
+bagging, IVoting -- poza obecnym zakresem kodu \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% =====================================================================================
+\section{Budowa modeli}
+\label{sec:modele}
+
+
+Uczonym modelem jest las losowy ze scikit-learn (\code{RandomForestClassifier},
+w regresji \code{RandomForestRegressor}). Dla każdego zbioru i ziarna powstaje jeden las,
+wspólny dla wszystkich badanych metod, więc różnice między metodami wynikają wyłącznie
+ze sposobu głosowania drzew.
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Liczba drzew: $T = 501$} (\code{[forest] n\_trees}). Las tej wielkości
+        uczy się i ewaluuje w rozsądnym czasie, a jednocześnie jest na tyle duży, że
+        wczesny stop daje mierzalne oszczędności, a wyniki metod są porównywalne między sobą.
+  \item \textbf{Głębokość drzew: \code{max\_depth = 5}} (\code{[forest] max\_depth}).
+        Wyjątkiem są zbiory z wieloma cechami informatywnymi (\code{binary\_multi\_features},
+        \code{multi\_multi\_features}: 100 cech, z czego 50 informatywnych), dla których
+        \code{max\_depth} ma wartość domyślną scikit-learn, czyli brak limitu głębokości
+        (\code{max\_depth = "none"} w \code{[forest.per\_dataset.<zbiór>]}). Przy
+        głębokości 5 drzewa są na tych zbiorach zbyt słabe i las traci dokładność.
+\end{itemize}
+
+Pozostałe parametry lasu mają wartości domyślne scikit-learn.
+
+Las losowy scikit-learn w metodzie \code{predict} stosuje \emph{soft voting}: uśrednia
+prawdopodobieństwa klas zwracane przez drzewa (rozkłady klas w liściach) i wybiera klasę
+o największym średnim prawdopodobieństwie. Badane metody bazują natomiast na
+\emph{twardych} odpowiedziach drzew (\emph{hard voting}): każde drzewo oddaje jeden głos
+na klasę przeważającą w swoim liściu, a wynik zależy od liczby głosów. Tylko przy takim
+głosowaniu można przerwać odpytywanie drzew, gdy przewaga głosów lidera przesądza wynik
+pełnego zespołu.
+
+Dlatego punktem odniesienia dla metod wczesnego stopu jest \code{full\_voting} --
+hard voting wszystkich 501 drzew (miara \code{agree\_full}), a oryginalny \code{rf.predict}
+(\code{rf\_sklearn}) jest dodatkowym odniesieniem, które pokazuje różnicę względem
+domyślnej predykcji scikit-learn (miara \code{agree\_rf}).
+
+
+\end{document}
